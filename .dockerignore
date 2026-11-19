@@ -9,3 +9,4 @@ docs
 tools
 # Old standalone ApexDrive build output, not used by the current client source.
 packages/client/public/dist
+*.tsbuildinfo
