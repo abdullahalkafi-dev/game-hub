@@ -20,4 +20,5 @@ The game hub includes StrikeCore, a browser-based multiplayer tactical shooter, 
 | [05 — Street and track racer](./05-game2-street-racer.md) | Race modes, controls, tracks, garage, and Time Trial ghosts |
 | [06 — Netcode and roadmap](./06-netcode-and-roadmap.md) | Current WebSocket protocol, movement prediction, authoritative combat, and future work |
 | [07 — Combat and visuals overhaul](./07-combat-visuals-overhaul-changelog.md) | Latest changelog and handover: particle fix, barrels, grenades, procedural weapons, hands, optic quick-swap, and open items |
+| [08 — Deployment](./08-deployment.md) | Docker stack, nginx and TLS layout, and how to ship an update to the VPS |
 | [Audio credits](../packages/client/public/assets/audio/CREDITS.md) | Attribution for gunfire, reload, and the optional spoken headshot cue |
