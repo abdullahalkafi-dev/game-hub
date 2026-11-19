@@ -1,0 +1,21 @@
+{
+  "name": "@game/client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^7.31.0",
+    "@babylonjs/loaders": "^7.31.0",
+    "@game/shared": "workspace:*",
+    "idb-keyval": "^6.2.1"
+  },
+  "devDependencies": {
+    "vite": "^5.4.10"
+  }
+}

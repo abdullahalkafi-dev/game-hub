@@ -1,0 +1,85 @@
+{
+  "generatedAt": "2026-11-18T21:47:39.163Z",
+  "env": [
+    "env/outdoor.env",
+    "env/studio.env"
+  ],
+  "textures": {
+    "asphalt_02": {
+      "diff": "textures/asphalt_02/diff.jpg",
+      "nor_gl": "textures/asphalt_02/nor_gl.jpg",
+      "arm": "textures/asphalt_02/arm.jpg"
+    },
+    "concrete_wall_005": {
+      "diff": "textures/concrete_wall_005/diff.jpg",
+      "nor_gl": "textures/concrete_wall_005/nor_gl.jpg",
+      "arm": "textures/concrete_wall_005/arm.jpg"
+    },
+    "corrugated_iron_02": {
+      "diff": "textures/corrugated_iron_02/diff.jpg",
+      "nor_gl": "textures/corrugated_iron_02/nor_gl.jpg",
+      "arm": "textures/corrugated_iron_02/arm.jpg"
+    },
+    "sandstone_blocks_05": {
+      "diff": "textures/sandstone_blocks_05/diff.jpg",
+      "nor_gl": "textures/sandstone_blocks_05/nor_gl.jpg",
+      "arm": "textures/sandstone_blocks_05/arm.jpg"
+    },
+    "metal_plate_02": {
+      "diff": "textures/metal_plate_02/diff.jpg",
+      "nor_gl": "textures/metal_plate_02/nor_gl.jpg",
+      "arm": "textures/metal_plate_02/arm.jpg"
+    },
+    "rusty_metal_02": {
+      "diff": "textures/rusty_metal_02/diff.jpg",
+      "nor_gl": "textures/rusty_metal_02/nor_gl.jpg",
+      "arm": "textures/rusty_metal_02/arm.jpg"
+    },
+    "brown_planks_04": {
+      "diff": "textures/brown_planks_04/diff.jpg",
+      "nor_gl": "textures/brown_planks_04/nor_gl.jpg",
+      "arm": "textures/brown_planks_04/arm.jpg"
+    },
+    "coast_sand_01": {
+      "diff": "textures/coast_sand_01/diff.jpg",
+      "nor_gl": "textures/coast_sand_01/nor_gl.jpg",
+      "arm": "textures/coast_sand_01/arm.jpg"
+    }
+  },
+  "models": {
+    "soldier": {
+      "main": "models/soldier/Soldier.glb",
+      "bytes": 2160468
+    },
+    "bolt_action_rifle_7_62": {
+      "dir": "models/bolt_action_rifle_7_62/",
+      "file": "bolt_action_rifle_7_62.gltf",
+      "bytes": 6040615
+    },
+    "service_pistol": {
+      "dir": "models/service_pistol/",
+      "file": "service_pistol.gltf",
+      "bytes": 3297684
+    },
+    "Barrel_01": {
+      "dir": "models/Barrel_01/",
+      "file": "Barrel_01.gltf",
+      "bytes": 692947
+    },
+    "concrete_road_barrier": {
+      "dir": "models/concrete_road_barrier/",
+      "file": "concrete_road_barrier.gltf",
+      "bytes": 3750787
+    },
+    "old_military_crate": {
+      "dir": "models/old_military_crate/",
+      "file": "old_military_crate.gltf",
+      "bytes": 2495423
+    },
+    "utility_box_01": {
+      "dir": "models/utility_box_01/",
+      "file": "utility_box_01.gltf",
+      "bytes": 1977061
+    }
+  }
+}

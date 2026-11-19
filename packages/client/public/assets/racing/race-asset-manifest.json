@@ -1,0 +1,117 @@
+{
+  "generatedAt": "2026-11-19T10:48:54.543Z",
+  "baseUrl": "/assets/racing/",
+  "models": {
+    "ferrari": {
+      "path": "ferrari.glb",
+      "bytes": 1681572
+    }
+  },
+  "draco": {
+    "wasmUrl": {
+      "path": "draco/draco_wasm_wrapper_gltf.js",
+      "bytes": 58569
+    },
+    "wasmBinaryUrl": {
+      "path": "draco/draco_decoder_gltf.wasm",
+      "bytes": 192420
+    },
+    "fallbackUrl": {
+      "path": "draco/draco_decoder_gltf.js",
+      "bytes": 512600
+    }
+  },
+  "env": {
+    "night": {
+      "path": "env/night.env",
+      "bytes": 2806999
+    },
+    "sunset": {
+      "path": "env/sunset.env",
+      "bytes": 3805646
+    },
+    "daylight": {
+      "path": "env/daylight.env",
+      "bytes": 273974
+    },
+    "studio": {
+      "path": "env/studio.env",
+      "bytes": 205260
+    }
+  },
+  "textures": {
+    "asphalt": {
+      "slug": "asphalt_04",
+      "files": {
+        "diff": {
+          "path": "textures/asphalt/diff.jpg",
+          "bytes": 3999385
+        },
+        "nor_gl": {
+          "path": "textures/asphalt/nor_gl.jpg",
+          "bytes": 4581129
+        },
+        "arm": {
+          "path": "textures/asphalt/arm.jpg",
+          "bytes": 2548131
+        }
+      },
+      "bytes": 11128645
+    },
+    "cliff_rock": {
+      "slug": "rock_wall_02",
+      "files": {
+        "diff": {
+          "path": "textures/cliff_rock/diff.jpg",
+          "bytes": 1209071
+        },
+        "nor_gl": {
+          "path": "textures/cliff_rock/nor_gl.jpg",
+          "bytes": 763948
+        },
+        "arm": {
+          "path": "textures/cliff_rock/arm.jpg",
+          "bytes": 848763
+        }
+      },
+      "bytes": 2821782
+    },
+    "gravel": {
+      "slug": "gravel_road",
+      "files": {
+        "diff": {
+          "path": "textures/gravel/diff.jpg",
+          "bytes": 2871851
+        },
+        "nor_gl": {
+          "path": "textures/gravel/nor_gl.jpg",
+          "bytes": 3613956
+        },
+        "arm": {
+          "path": "textures/gravel/arm.jpg",
+          "bytes": 1184014
+        }
+      },
+      "bytes": 7669821
+    },
+    "barrier_steel": {
+      "slug": "metal_plate_02",
+      "files": {
+        "diff": {
+          "path": "textures/barrier_steel/diff.jpg",
+          "bytes": 2604239
+        },
+        "nor_gl": {
+          "path": "textures/barrier_steel/nor_gl.jpg",
+          "bytes": 565185
+        },
+        "arm": {
+          "path": "textures/barrier_steel/arm.jpg",
+          "bytes": 4445975
+        }
+      },
+      "bytes": 7615399
+    }
+  },
+  "totalBytes": 38772687
+}

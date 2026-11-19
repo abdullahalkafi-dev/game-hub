@@ -1,0 +1,27 @@
+# Production stack for game-hub.joura.info.
+#
+# Only the web container is published, and only on loopback. The host nginx
+# terminates TLS and forwards to 127.0.0.1:3120, the same pattern the other apps on this box use.
+
+services:
+  server:
+    build:
+      context: .
+      target: server
+    restart: unless-stopped
+    volumes:
+      # Player ratings live here so a redeploy does not wipe the leaderboard.
+      - ratings:/data
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "127.0.0.1:3120:80"
+
+volumes:
+  ratings:
