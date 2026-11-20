@@ -12,6 +12,10 @@ services:
     volumes:
       # Player ratings live here so a redeploy does not wipe the leaderboard.
       - ratings:/data
+    environment:
+      # /admin stays disabled while this is empty. Set it in a .env file next to this compose file.
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_UPLOAD_DIR: /data/uploads
 
   web:
     build:

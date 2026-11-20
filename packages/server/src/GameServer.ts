@@ -15,6 +15,7 @@ import type { ClientSender, FpsArenaRoom } from "./rooms/FpsArenaRoom.js";
 import { Rankings } from "./systems/Rankings.js";
 import { RaceRoomManager } from "./racing/RaceRoomManager.js";
 import type { RaceClientSender, RaceRoom } from "./racing/RaceRoom.js";
+import { createAdminHandler } from "./admin/AdminModule.js";
 
 export async function createGameServer() {
   await initRapier();
@@ -22,10 +23,15 @@ export async function createGameServer() {
   await rankings.load();
   const roomManager = new RoomManager(rankings);
   const raceRoomManager = new RaceRoomManager();
+  // Private weapon-model upload area at /admin. Disabled unless ADMIN_PASSWORD is set.
+  const handleAdmin = createAdminHandler({
+    password: process.env.ADMIN_PASSWORD,
+    uploadDir: resolve(process.env.ADMIN_UPLOAD_DIR ?? "uploads"),
+  });
 
   const server = http.createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (req.method === "OPTIONS") {
@@ -67,6 +73,8 @@ export async function createGameServer() {
       res.end(JSON.stringify({ players: rankings.leaderboard() }));
       return;
     }
+
+    if (handleAdmin(req, res, pathname)) return;
 
     res.writeHead(404);
     res.end("Not found");

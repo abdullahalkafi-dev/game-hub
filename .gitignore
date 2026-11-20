@@ -6,3 +6,5 @@ dist
 .DS_Store
 .strikecore-ratings.json*
 *.tsbuildinfo
+
+.env
