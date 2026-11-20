@@ -1,5 +1,9 @@
 import {
   ATTACHMENT_LIST,
+  DEFAULT_SCORE_LIMIT,
+  DEFAULT_TIME_LIMIT_SEC,
+  SCORE_LIMIT_OPTIONS,
+  TIME_LIMIT_OPTIONS_SEC,
   MAP_LIST,
   MODE_CONFIGS,
   careerLevel,
@@ -44,7 +48,8 @@ export class LobbyScreen {
   private createPublic = true;
   private botFill = true;
   private friendlyFire = false;
-  private customTime = "";
+  private timeLimitSec: number = DEFAULT_TIME_LIMIT_SEC;
+  private scoreLimit: number = DEFAULT_SCORE_LIMIT;
   private activeTab: "PLAY" | "GUNSMITH" | "SERVERS" = "PLAY";
   private editingSlot: "primary" | "secondary" = "primary";
   private preloadStatusText = "Preloading map assets...";
@@ -91,7 +96,7 @@ export class LobbyScreen {
   }
 
   private render(): void {
-    const modes: GameMode[] = ["1v1", "2v2", "4v4", "TDM", "WARMUP"];
+    const modes: GameMode[] = ["1v1", "2v2", "TDM", "WARMUP"];
     const editCfg = this.getEditingWeaponConfig();
     const baseWeapon = WEAPON_REGISTRY[editCfg.weaponId] ?? WEAPON_REGISTRY.m416;
     const effStats = computeEffectiveWeaponStats(editCfg.weaponId, editCfg.attachments);
@@ -169,9 +174,9 @@ export class LobbyScreen {
                       <div class="select-card-title" style="gap:10px;">
                         <span style="font-family:var(--font-mono);color:var(--accent-cyan);">[${r.code}]</span>
                         <span>${r.mapName}</span>
-                        <span style="font-size:11px;color:var(--accent-amber);">${r.ranked ? "Ranked TDM" : r.mode} • ${r.phase}</span>
+                        <span style="font-size:11px;color:var(--accent-amber);">${r.ranked ? "Ranked TDM" : r.mode} • ${describeRoomStatus(r)}</span>
                       </div>
-                      <div class="select-card-desc">Players: ${r.playerCount} / ${r.maxPlayers} (${r.humanCount} human)</div>
+                      <div class="select-card-desc">${describeRoomRules(r)} • Players: ${r.playerCount} / ${r.maxPlayers} (${r.humanCount} human)</div>
                     </div>
                     <button class="btn btn-primary" data-join-public="${r.code}">Join Room</button>
                   </div>
@@ -347,10 +352,21 @@ export class LobbyScreen {
               <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:10px;cursor:pointer;">
                 <input id="chk-bots" type="checkbox" ${this.botFill ? "checked" : ""}> Auto-Fill Empty Slots with Tactical AI Bots
               </label>
-              ${this.selectedMode !== "WARMUP" ? `<label class="code-row" style="margin-bottom:8px;font-size:12px;">
-                <span>${this.selectedMode === "TDM" ? "Match" : "Round"} time (seconds)</span>
-                <input class="text-input" id="custom-time" type="number" min="30" max="900" step="1" value="${this.customTime}" placeholder="${MODE_CONFIGS[this.selectedMode].roundTimeSec}" aria-label="Time limit in seconds" style="width:95px;">
-              </label>` : ""}
+              ${this.selectedMode !== "WARMUP" ? `
+                <div class="rule-group">
+                  <div class="rule-label">Match length</div>
+                  <div class="chip-row" role="radiogroup" aria-label="Match length">
+                    ${TIME_LIMIT_OPTIONS_SEC.map((sec) => `<button type="button" role="radio" aria-checked="${this.timeLimitSec === sec}" class="chip${this.timeLimitSec === sec ? " active" : ""}" data-time-limit="${sec}">${formatTimeLimit(sec)}</button>`).join("")}
+                  </div>
+                </div>
+                <div class="rule-group">
+                  <div class="rule-label">Kill limit</div>
+                  <div class="chip-row" role="radiogroup" aria-label="Kill limit">
+                    ${SCORE_LIMIT_OPTIONS.map((n) => `<button type="button" role="radio" aria-checked="${this.scoreLimit === n}" class="chip${this.scoreLimit === n ? " active" : ""}" data-score-limit="${n}">${n === 0 ? "None" : n}</button>`).join("")}
+                  </div>
+                </div>
+                <div class="rule-summary">${MODE_CONFIGS[this.selectedMode].label} · ${formatTimeLimit(this.timeLimitSec)} · ${formatScoreLimit(this.scoreLimit)}. Match ends at the kill limit or when time runs out; most kills wins.</div>
+              ` : ""}
               <label class="code-row" style="margin-bottom:8px;font-size:12px;">
                 <input type="checkbox" id="custom-friendly-fire" ${this.friendlyFire ? "checked" : ""}> Friendly fire
               </label>
@@ -475,6 +491,7 @@ export class LobbyScreen {
         mapId: this.selectedMapId,
         botFill: this.botFill,
         botDifficulty: this.profile.settings.botDifficulty,
+        matchRules: { timeLimitSeconds: this.timeLimitSec, scoreLimit: this.scoreLimit },
       });
     });
 
@@ -482,21 +499,29 @@ export class LobbyScreen {
       this.callbacks.onQuickPlay({ mode: "TDM", mapId: this.selectedMapId, botFill: false,
         botDifficulty: this.profile.settings.botDifficulty, matchRules: { ranked: true } });
     });
-    this.root.querySelector<HTMLInputElement>("#custom-time")?.addEventListener("input", (event) => {
-      this.customTime = (event.currentTarget as HTMLInputElement).value;
+    this.root.querySelectorAll<HTMLButtonElement>("[data-time-limit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.timeLimitSec = Number(btn.dataset.timeLimit);
+        this.render();
+      });
+    });
+    this.root.querySelectorAll<HTMLButtonElement>("[data-score-limit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.scoreLimit = Number(btn.dataset.scoreLimit);
+        this.render();
+      });
     });
     this.root.querySelector<HTMLInputElement>("#custom-friendly-fire")?.addEventListener("change", (event) => {
       this.friendlyFire = (event.currentTarget as HTMLInputElement).checked;
     });
 
     this.root.querySelector("#btn-create-room")?.addEventListener("click", () => {
-      const timeLimit = this.root.querySelector<HTMLInputElement>("#custom-time")?.valueAsNumber;
       const friendlyFire = this.root.querySelector<HTMLInputElement>("#custom-friendly-fire")?.checked === true;
       this.callbacks.onCreateRoom({
         mode: this.selectedMode,
         mapId: this.selectedMapId,
         isPublic: this.createPublic,
-        matchRules: { friendlyFire, timeLimitSeconds: Number.isFinite(timeLimit) ? timeLimit : undefined },
+        matchRules: { friendlyFire, timeLimitSeconds: this.timeLimitSec, scoreLimit: this.scoreLimit },
         botFill: this.botFill,
         botDifficulty: this.profile.settings.botDifficulty,
       });
@@ -577,5 +602,34 @@ export class LobbyScreen {
 
   dispose(): void {
     this.root.remove();
+  }
+}
+
+function formatTimeLimit(sec: number): string {
+  return sec <= 0 ? "Unlimited" : `${Math.round(sec / 60)} min`;
+}
+
+function formatScoreLimit(n: number): string {
+  return n <= 0 ? "No kill limit" : `First to ${n}`;
+}
+
+function describeRoomRules(r: PublicRoomSummary): string {
+  if (r.timeLimitSeconds === undefined || r.scoreLimit === undefined) return MODE_CONFIGS[r.mode].label;
+  return `${formatTimeLimit(r.timeLimitSeconds)} • ${formatScoreLimit(r.scoreLimit)}`;
+}
+
+function describeRoomStatus(r: PublicRoomSummary): string {
+  switch (r.phase) {
+    case "WARMUP": return "Waiting for players";
+    case "COUNTDOWN": return "Starting";
+    case "MATCH_END": return "Match over";
+    case "LIVE": {
+      const score = r.scoreA !== undefined && r.scoreB !== undefined ? ` ${r.scoreA}:${r.scoreB}` : "";
+      const left = r.timeLimitSeconds && r.timeLimitSeconds > 0 && r.timeRemainingSec !== undefined
+        ? ` • ${Math.floor(r.timeRemainingSec / 60)}:${String(r.timeRemainingSec % 60).padStart(2, "0")} left`
+        : "";
+      return `In progress${score}${left}`;
+    }
+    default: return r.phase;
   }
 }

@@ -5,7 +5,7 @@ import {
   INPUT_FLAG_SPRINT,
   MAP_LIST,
   MAP_REGISTRY,
-  OVERTIME_CAPTURE_NEEDED_SEC,
+  COUNTDOWN_SEC,
   PhysicsWorld,
   createCharacterPhysics,
   createInitialFpsState,
@@ -49,7 +49,7 @@ describe("LagCompensator & Authoritative FPS Room", () => {
       const step = () => {
         const decision = stepBotAiDecision("bot", "A", 100, bot, memory,
           [{ id: "player", team: "B", alive: true, state: target, hp: 100 }],
-          world, map, [], false, true, "EASY", FIXED_DT);
+          world, map, [], true, "EASY", FIXED_DT);
         bot.yaw = decision.input.yaw;
         bot.pitch = decision.input.pitch;
         return decision;
@@ -82,7 +82,7 @@ describe("LagCompensator & Authoritative FPS Room", () => {
         const exitDepth = map.spawnScreenZ! - 3.25;
         for (let i = 0; i < 540 && Math.abs(state.position.z) >= exitDepth; i++) {
           const { input } = stepBotAiDecision("bot", "A", 100, state, memory, [],
-            world, map, [], false, true, "EASY", FIXED_DT);
+            world, map, [], true, "EASY", FIXED_DT);
           stepFpsCharacter(world, handle, state, input, 1, FIXED_DT);
         }
         expect(Math.abs(state.position.z), `spawn slot ${index + 1}`).toBeLessThan(exitDepth);
@@ -170,7 +170,7 @@ describe("LagCompensator & Authoritative FPS Room", () => {
     expect(rewound50ms!.headCenter.x).toBeCloseTo(2.0, 3);
   });
 
-  it("handles 4-letter codes, host migration, 20s reconnect grace, and 2v2 mirrored kits", async () => {
+  it("handles 4-letter codes, host migration, and 20s reconnect grace", async () => {
     await initRapier();
     const mgr = new RoomManager();
     managers.push(mgr);
@@ -206,8 +206,7 @@ describe("LagCompensator & Authoritative FPS Room", () => {
 
     room.handleClientMessage(join1.player.id, { type: "START_MATCH" });
     const stateAfterStart = room.getRoomStateBroadcast();
-    expect(stateAfterStart.phase).toBe("PRE_ROUND_FREEZE");
-    expect(stateAfterStart.gunfightLoadout).toBeDefined();
+    expect(stateAfterStart.phase).toBe("COUNTDOWN");
 
     room.handleDisconnect(join1.player.id);
     const stateAfterDc = room.getRoomStateBroadcast();
@@ -362,7 +361,7 @@ describe("LagCompensator & Authoritative FPS Room", () => {
   });
 
   describe("Team Deathmatch", () => {
-    async function createMatch(startMatch = true, mode: "TDM" | "WARMUP" | "1v1" | "2v2" | "4v4" = "TDM") {
+    async function createMatch(startMatch = true, mode: "TDM" | "WARMUP" | "1v1" | "2v2" = "TDM") {
       await initRapier();
       const room = new FpsArenaRoom({ code: "TDM", mode, mapId: "cargo_docks", isPublic: false, botFill: false });
       const client = createMockSender();
@@ -375,7 +374,7 @@ describe("LagCompensator & Authoritative FPS Room", () => {
       });
       const internals = room as unknown as {
         tick: (clockMs: number) => void;
-        stepRoundStateMachine: (dt: number) => void;
+        stepMatchClock: (dt: number) => void;
         applyDamageToPlayer: (attacker: typeof alpha, victim: typeof bravo, amount: number, zone: "HEAD",
           weapon: string, armorPen: number, wallbang: boolean, distance: number) => void;
         scoreA: number;
@@ -389,7 +388,7 @@ describe("LagCompensator & Authoritative FPS Room", () => {
         internals.applyDamageToPlayer(attacker, victim, amount, "HEAD", "m416", 1, false, 3);
       if (startMatch) {
         room.beginMatch();
-        step(61);
+        step(COUNTDOWN_SEC * 60 + 1);
       }
       return { room, client, otherClient, alpha, bravo, step, damage, internals };
     }
@@ -427,7 +426,7 @@ describe("LagCompensator & Authoritative FPS Room", () => {
 
         const epoch = alpha.movementEpoch;
         damage(alpha, bravo, 100);
-        expect(room.getRoomStateBroadcast()).toMatchObject({ phase: "LIVE_ROUND", scoreA: 1, scoreB: 0 });
+        expect(room.getRoomStateBroadcast()).toMatchObject({ phase: "LIVE", scoreA: 1, scoreB: 0 });
         expect(alpha.state.position).toEqual({ x: 3, y: 0, z: 2 });
         expect(alpha.movementEpoch).toBe(epoch);
         expect(alpha.hp).toBe(75);
@@ -492,10 +491,9 @@ describe("LagCompensator & Authoritative FPS Room", () => {
       }
     });
 
-    it.each(["WARMUP", "1v1", "2v2", "4v4"] as const)("regenerates health in %s", async (mode) => {
+    it.each(["WARMUP", "1v1", "2v2", "TDM"] as const)("regenerates health in %s", async (mode) => {
       const { room, alpha, bravo, step, damage, internals } = await createMatch(mode !== "WARMUP", mode);
       try {
-        if (mode === "2v2") internals.phase = "OVERTIME_ZONE";
         damage(bravo, alpha, 30);
         step(299);
         expect(alpha.hp).toBe(70);
@@ -546,8 +544,8 @@ describe("LagCompensator & Authoritative FPS Room", () => {
         expect(alpha.armor).toBe(30);
         expect(client.messages.filter((message) => message.type === "PICKUP_COLLECTED")).toHaveLength(1);
         room.beginMatch();
-        step(61);
-        expect(room.getRoomStateBroadcast()).toMatchObject({ roundTimeRemainingSec: 80, matchRules: { friendlyFire: true } });
+        step(COUNTDOWN_SEC * 60 + 1);
+        expect(room.getRoomStateBroadcast()).toMatchObject({ timeRemainingSec: 80, matchRules: { friendlyFire: true, timeLimitSeconds: 80 } });
       } finally {
         room.stop();
       }
@@ -609,24 +607,84 @@ describe("LagCompensator & Authoritative FPS Room", () => {
       }
     });
 
-    it("ends on the thirtieth elimination or the lead at seven minutes", async () => {
+    it("ends at the default 20-kill limit or when the 8-minute timer runs out", async () => {
       const { room, client, alpha, bravo, damage, internals } = await createMatch();
       try {
-        internals.scoreA = 29;
+        expect(room.getRoomStateBroadcast().matchRules).toMatchObject({ timeLimitSeconds: 480, scoreLimit: 20 });
+        internals.scoreA = 19;
         damage(alpha, bravo, 100);
-        expect(room.getRoomStateBroadcast()).toMatchObject({ phase: "MATCH_END", scoreA: 30 });
-        expect(client.messages.find((message) => message.type === "ROUND_BANNER"))
-          .toMatchObject({ winnerTeam: "A", isMatchOver: true });
+        expect(room.getRoomStateBroadcast()).toMatchObject({ phase: "MATCH_END", scoreA: 20 });
+        expect(client.messages.find((message) => message.type === "MATCH_ENDED"))
+          .toMatchObject({ winnerTeam: "A" });
 
         room.beginMatch();
-        internals.stepRoundStateMachine(2);
+        internals.stepMatchClock(COUNTDOWN_SEC + 0.01);
         damage(bravo, alpha, 100);
-        internals.stepRoundStateMachine(419);
-        expect(room.getRoomStateBroadcast().phase).toBe("LIVE_ROUND");
-        internals.stepRoundStateMachine(1);
+        internals.stepMatchClock(478);
+        expect(room.getRoomStateBroadcast().phase).toBe("LIVE");
+        internals.stepMatchClock(2);
         expect(room.getRoomStateBroadcast()).toMatchObject({ phase: "MATCH_END", scoreA: 0, scoreB: 1 });
-        expect(client.messages.filter((message) => message.type === "ROUND_BANNER").at(-1))
-          .toMatchObject({ winnerTeam: "B", isMatchOver: true });
+        expect(client.messages.filter((message) => message.type === "MATCH_ENDED").at(-1))
+          .toMatchObject({ winnerTeam: "B" });
+      } finally {
+        room.stop();
+      }
+    });
+
+    it("lets the host pick the time and kill limit, and supports unlimited time", async () => {
+      const { room, alpha, bravo, damage, internals } = await createMatch(false, "1v1");
+      try {
+        room.handleClientMessage(alpha.id, { type: "UPDATE_ROOM_SETTINGS",
+          matchRules: { timeLimitSeconds: 0, scoreLimit: 3 } });
+        expect(room.getRoomStateBroadcast().matchRules).toMatchObject({ timeLimitSeconds: 0, scoreLimit: 3 });
+        room.beginMatch();
+        internals.stepMatchClock(COUNTDOWN_SEC + 0.01);
+        internals.stepMatchClock(60 * 60);
+        expect(room.getRoomStateBroadcast().phase).toBe("LIVE");
+        for (let i = 0; i < 2; i++) {
+          damage(alpha, bravo, 100);
+          bravo.alive = true;
+          bravo.hp = 100;
+          expect(room.getRoomStateBroadcast().phase).toBe("LIVE");
+        }
+        damage(alpha, bravo, 100);
+        expect(room.getRoomStateBroadcast()).toMatchObject({ phase: "MATCH_END", scoreA: 3 });
+      } finally {
+        room.stop();
+      }
+    });
+
+    it("keeps duels continuous: the victim respawns at once while the killer stays put and no round resets", async () => {
+      const { room, alpha, bravo, step, damage } = await createMatch(true, "1v1");
+      try {
+        const killerSpot = { ...alpha.state.position };
+        damage(alpha, bravo, 100);
+        expect(bravo.alive).toBe(false);
+        expect(room.getRoomStateBroadcast()).toMatchObject({ phase: "LIVE", scoreA: 1, scoreB: 0 });
+        step(Math.ceil(3.2 * 60));
+        expect(bravo.alive).toBe(true);
+        expect(bravo.spawnProtection).toBeGreaterThan(0);
+        expect(alpha.state.position.x).toBeCloseTo(killerSpot.x, 5);
+        expect(alpha.state.position.z).toBeCloseTo(killerSpot.z, 5);
+        expect(alpha.hp).toBe(100);
+        expect(room.getRoomStateBroadcast().phase).toBe("LIVE");
+      } finally {
+        room.stop();
+      }
+    });
+
+    it("declares the player with the most kills the winner, and a draw on a tie", async () => {
+      const { room, client, alpha, bravo, damage, internals } = await createMatch(true, "1v1");
+      try {
+        damage(alpha, bravo, 100);
+        internals.stepMatchClock(480);
+        expect(client.messages.filter((message) => message.type === "MATCH_ENDED").at(-1))
+          .toMatchObject({ winnerTeam: alpha.team });
+        room.beginMatch();
+        internals.stepMatchClock(COUNTDOWN_SEC + 0.01);
+        internals.stepMatchClock(480);
+        expect(client.messages.filter((message) => message.type === "MATCH_ENDED").at(-1))
+          .toMatchObject({ winnerTeam: "DRAW" });
       } finally {
         room.stop();
       }
@@ -648,13 +706,13 @@ describe("LagCompensator & Authoritative FPS Room", () => {
     });
   });
 
-  it("detonates explosive barrels, throwables (frag/flashbang), and captures the 45s Overtime Zone", async () => {
+  it("detonates explosive barrels and throwables (frag/flashbang)", async () => {
     await initRapier();
     const mgr = new RoomManager();
     managers.push(mgr);
 
     const room = mgr.createRoom({
-      mode: "1v1",
+      mode: "WARMUP",
       mapId: "cargo_docks",
       isPublic: false,
       botFill: false,
@@ -735,20 +793,5 @@ describe("LagCompensator & Authoritative FPS Room", () => {
     }
     const flashed = cB.messages.find((m) => m.type === "FLASHED");
     expect(flashed).toBeDefined();
-
-    // Test 45s Overtime Capture Zone round victory
-    room.beginMatch();
-    (room as unknown as { phase: string; overtimeActive: boolean }).phase = "OVERTIME_ZONE";
-    (room as unknown as { overtimeActive: boolean }).overtimeActive = true;
-    pA.player.state.position = { x: 0, y: 0, z: 0 }; // inside overtimeZone (radius 4)
-    pB.player.state.position = { x: 15, y: 0, z: 15 }; // outside
-
-    const stepOv = (room as unknown as { stepOvertimeCapture: (dt: number) => void }).stepOvertimeCapture.bind(room);
-    for (let i = 0; i < Math.ceil(OVERTIME_CAPTURE_NEEDED_SEC * 60) + 5; i++) {
-      stepOv(1 / 60);
-    }
-    const finalBroadcast = room.getRoomStateBroadcast();
-    expect(finalBroadcast.scoreA).toBe(1);
-    expect(finalBroadcast.phase).toBe("ROUND_END");
   });
 });

@@ -114,7 +114,7 @@ function castNavigationWhisker(
  * - 3-Ray Rapier obstacle avoidance whiskers so bots steer cleanly around containers & walls
  * - True target acquisition reactionDelay based on difficulty (EASY / NORMAL / PRO)
  * - Dynamic combat strafing, Q/E corner leaning, crouch-bursts, and low-HP cover retreat
- * - Respects smoke grenade clouds & navigates to Overtime Zone when unlocked
+ * - Respects smoke grenade clouds and patrols the map waypoints
  */
 export function stepBotAiDecision(
   botId: string,
@@ -126,7 +126,6 @@ export function stepBotAiDecision(
   physWorld: PhysicsWorld,
   map: MapBlueprint,
   activeSmokes: readonly SmokeCloudVolume[],
-  overtimeActive: boolean,
   canShoot: boolean,
   difficulty: BotDifficulty,
   dt: number
@@ -226,9 +225,7 @@ export function stepBotAiDecision(
 
     const waypoints = map.botWaypoints;
     const spawnExit = getSpawnExitTarget(map, botState.position);
-    const targetPoint = spawnExit ?? (overtimeActive
-      ? map.overtimeZone.center
-      : waypoints[memory.waypointIndex % waypoints.length] ?? map.overtimeZone.center);
+    const targetPoint = spawnExit ?? waypoints[memory.waypointIndex % waypoints.length] ?? { x: 0, y: 0, z: 0 };
 
     const dx = targetPoint.x - botState.position.x;
     const dz = targetPoint.z - botState.position.z;

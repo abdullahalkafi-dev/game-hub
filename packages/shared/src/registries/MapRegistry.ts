@@ -49,8 +49,6 @@ export interface MapBlueprint {
   spawnsA: MapSpawnSpec[];
   spawnsB: MapSpawnSpec[];
   spawnScreenZ?: number;
-  overtimeZone: { center: Vec3; radius: number };
-  bombSite: { center: Vec3; radius: number };
   warmupTargets: Vec3[];
   botWaypoints: Vec3[];
   previewAccentHex: string;
@@ -115,8 +113,6 @@ export const MAP_REGISTRY: Record<string, MapBlueprint> = {
       { position: { x: -12, y: 0, z: 24 }, yaw: Math.PI - 0.15 },
       { position: { x: 12, y: 0, z: 24 }, yaw: Math.PI + 0.15 },
     ],
-    overtimeZone: { center: { x: 0, y: 0.05, z: 0 }, radius: 4.0 },
-    bombSite: { center: { x: 0, y: 0.05, z: 2 }, radius: 3.5 },
     warmupTargets: [
       { x: -7, y: 1.4, z: 5 },
       { x: 0, y: 1.4, z: 9 },
@@ -213,8 +209,6 @@ export const MAP_REGISTRY: Record<string, MapBlueprint> = {
       { position: { x: -11, y: 0, z: 23 }, yaw: Math.PI - 0.1 },
       { position: { x: 11, y: 0, z: 23 }, yaw: Math.PI + 0.1 },
     ],
-    overtimeZone: { center: { x: 0, y: 0.05, z: 0 }, radius: 4.0 },
-    bombSite: { center: { x: 0, y: 0.05, z: 0 }, radius: 3.5 },
     warmupTargets: [
       { x: -6, y: 1.4, z: 6 },
       { x: 0, y: 1.4, z: 10 },
@@ -296,8 +290,6 @@ export const MAP_REGISTRY: Record<string, MapBlueprint> = {
       { position: { x: -11, y: 0, z: 21 }, yaw: Math.PI - 0.1 },
       { position: { x: 11, y: 0, z: 21 }, yaw: Math.PI + 0.1 },
     ],
-    overtimeZone: { center: { x: 0, y: 0.05, z: 0 }, radius: 4.0 },
-    bombSite: { center: { x: 0, y: 0.05, z: 0 }, radius: 3.8 },
     warmupTargets: [
       { x: -6, y: 1.4, z: 5 },
       { x: 0, y: 1.4, z: 8 },

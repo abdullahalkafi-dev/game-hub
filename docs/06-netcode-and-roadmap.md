@@ -16,7 +16,7 @@ The current **movement protocol version is 4**. Clients and servers should ship 
 
 - The room simulates at **60 Hz** and sends world and local-player snapshots at **20 Hz**. Room summaries and timers are also broadcast twice a second and when relevant events occur.
 - The client immediately predicts movement with the same [character controller](../packages/shared/src/physics/FpsCharacterController.ts) used by the server. The server processes queued input within a time budget. `LOCAL_STATE` acknowledges processed movement and shots. The client restores authoritative movement when needed and replays unacknowledged inputs, smoothing the visible correction.
-- A movement epoch identifies the current stream. Spawn, round reset, and reconnect reset the stream. The server rejects commands tagged with an old epoch.
+- A movement epoch identifies the current stream. Spawn, match start, and reconnect reset the stream. The server rejects commands tagged with an old epoch.
 - The client draws remote players through a **100 ms interpolation buffer**. A binary world snapshot has a **12-byte header** and **26 bytes per player** for position, angles, lean, stance and grounded flags, weapon slot, health, armor, and horizontal velocity. The grounded and movement data drive remote gait and footsteps.
 
 ## Authoritative firing and TDM state

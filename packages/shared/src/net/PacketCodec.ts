@@ -180,22 +180,16 @@ export interface RoomStateBroadcast {
   mode: GameMode;
   mapId: string;
   phase: RoundPhase;
-  roundNumber: number;
-  roundTimeRemainingSec: number;
+  /** Seconds left in the match (or countdown). Meaningless when matchRules.timeLimitSeconds is 0. */
+  timeRemainingSec: number;
+  /** Seconds since the match went live. */
+  elapsedSec: number;
   scoreA: number;
   scoreB: number;
-  overtimeActive: boolean;
-  overtimeHolder: TeamId | "CONTESTED" | null;
-  overtimeProgressA: number;
-  overtimeProgressB: number;
-  bombPlanted: boolean;
-  bombTimerSec: number;
-  bombPlanterTeam: TeamId | null;
   botFill: boolean;
   botDifficulty?: BotDifficulty;
   matchRules?: MatchRules;
   pickups?: ArenaPickup[];
-  gunfightLoadout?: PlayerLoadoutPayload;
   players: RoomPlayerSummary[];
   mapVoteOptions?: string[];
   mapVotes?: Record<string, number>;
@@ -261,7 +255,6 @@ export type ClientToServerMessage =
       movementEpoch?: number;
     }
   | { type: "DANGER_PING"; position: Vec3 }
-  | { type: "BOMB_ACTION"; action: "PLANT" | "DEFUSE" | "CANCEL" }
   | { type: "VOTE_MAP"; mapId: string }
   | { type: "REMATCH_NOW" }
   | { type: "PING_CHECK"; t0: number };
@@ -334,7 +327,10 @@ export type ServerToClientMessage =
       isHeadshot: boolean;
       isWallbang: boolean;
       distanceM: number;
-      isRoundWinningKill: boolean;
+      isMatchWinningKill: boolean;
+      /** Killer's running streak after this kill, and how many kills in the current multi-kill window. */
+      streak: number;
+      multi: number;
       killerHpLeft: number;
     }
   | {
@@ -374,7 +370,7 @@ export type ServerToClientMessage =
   | { type: "PICKUP_COLLECTED"; kind: PickupKind }
   | { type: "DEATH_REPLAY"; killerId: string; killerName: string; frames: DeathReplayFrame[] }
   | { type: "MATCH_RESULTS"; winnerTeam: TeamId | "DRAW"; mvpId?: string; players: MatchResultPlayer[] }
-  | { type: "ROUND_BANNER"; winnerTeam: TeamId | "DRAW"; reason: string; isMatchOver: boolean }
+  | { type: "MATCH_ENDED"; winnerTeam: TeamId | "DRAW"; reason: string }
   | { type: "PONG_CHECK"; t0: number; serverTimeMs: number };
 
 export interface ShotSurface {

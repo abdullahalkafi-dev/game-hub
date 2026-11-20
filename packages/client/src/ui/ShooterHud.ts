@@ -2,11 +2,10 @@ import {
   MAP_LIST,
   MAP_REGISTRY,
   careerLevel,
-  OVERTIME_CAPTURE_NEEDED_SEC,
   SKIN_LIST,
   ATTACHMENT_REGISTRY,
   SKIN_REGISTRY,
-  TDM_SCORE_TARGET,
+  MODE_CONFIGS,
   THROWABLE_ORDER,
   THROWABLE_REGISTRY,
   WEAPON_LIST,
@@ -34,6 +33,7 @@ export interface ShooterHudCallbacks {
   onOpenSettings: () => void;
   onUpdateLoadout: (loadout: PlayerLoadoutPayload) => void;
   onLeaveRoom: () => void;
+  onMasterVolumeChange: (volume: number) => void;
 }
 
 function escapeText(value: string): string {
@@ -43,6 +43,8 @@ function escapeText(value: string): string {
 function percentage(numerator = 0, denominator = 0): number {
   return denominator > 0 ? Math.round(100 * numerator / denominator) : 0;
 }
+
+const KILLFEED_LIFETIME_MS = 6000;
 
 export class ShooterHud {
   private readonly root: HTMLDivElement;
@@ -66,7 +68,10 @@ export class ShooterHud {
   private lastMarkerHtml = "";
   private crosshairKey = "";
 
-  private readonly killfeedItems: { id: number; html: string }[] = [];
+  private readonly killfeedItems: { id: number; html: string; mine: boolean; expiresAt: number }[] = [];
+  private killfeedTimer: ReturnType<typeof setInterval> | null = null;
+  private killBannerTimeout: ReturnType<typeof setTimeout> | null = null;
+  private volumeToastTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     parent: HTMLElement,
@@ -113,9 +118,11 @@ export class ShooterHud {
       </div>
       <div class="killfeed" id="hud-killfeed"></div>
 
-      <div class="overtime-bar hidden" id="hud-overtime-bar">
-        <div style="font-size:11px;font-weight:900;color:var(--accent-amber);" id="hud-ot-label">OVERTIME RADAR ZONE UNLOCKED</div>
-        <div class="bar-track" style="margin-top:5px;"><div class="hp-fill" id="hud-ot-fill" style="width:0%;background:var(--accent-amber);"></div></div>
+      <div class="killbanner hidden" id="hud-killbanner" aria-live="polite"></div>
+      <div class="volume-toast hidden" id="hud-volume-toast" role="status" aria-live="polite">
+        <div class="vt-row"><span class="vt-icon" id="hud-volume-icon">🔊</span><span class="vt-label">VOLUME</span><span class="vt-pct" id="hud-volume-pct">75%</span></div>
+        <div class="vt-track"><div class="vt-fill" id="hud-volume-fill"></div></div>
+        <div class="vt-keys"><kbd>-</kbd> <kbd>=</kbd> volume · <kbd>F8</kbd> mute</div>
       </div>
 
       <div class="sniper-scope hidden" id="hud-scope">
@@ -202,6 +209,11 @@ export class ShooterHud {
             <span style="font-size:11px;color:var(--accent-green);" id="pause-host-tag"></span>
           </div>
 
+          <label class="pause-volume" for="pause-volume">
+            <span class="pv-head"><span>Master volume <small>(<kbd>-</kbd> / <kbd>=</kbd> in game, <kbd>F8</kbd> mute)</small></span><b id="pause-volume-val">75%</b></span>
+            <input id="pause-volume" type="range" min="0" max="100" step="5" value="75">
+          </label>
+
           <div id="pause-players" class="pause-player-list"></div>
           <details class="match-controls"><summary>Controls</summary>
             <p>WASD move · Mouse aim · Left click fire · Right click aim down sights</p>
@@ -287,6 +299,12 @@ export class ShooterHud {
       this.callbacks.onStartMatch();
     });
 
+    this.root.querySelector<HTMLInputElement>("#pause-volume")?.addEventListener("input", (event) => {
+      const value = Number((event.currentTarget as HTMLInputElement).value);
+      const label = this.root.querySelector("#pause-volume-val");
+      if (label) label.textContent = `${value}%`;
+      this.callbacks.onMasterVolumeChange(value / 100);
+    });
     this.root.querySelector("#pause-resume")?.addEventListener("click", () => {
       this.callbacks.onResumeCombat();
     });
@@ -337,11 +355,11 @@ export class ShooterHud {
   private renderLoadoutModal(): void {
     const content = this.root.querySelector("#hud-loadout-content");
     if (!content) return;
-    const isTdm = this.room?.mode === "TDM";
+    const isTdm = this.room !== null && this.room !== undefined && this.room.mode !== "WARMUP";
     const kitSlot = this.profile.tdmKitSlot ?? 0;
     const kits = isTdm ? this.getTdmKits(kitSlot) : undefined;
     const primary = this.profile.loadout.primary;
-    const applyAtRespawn = isTdm && (this.room?.phase === "LIVE_ROUND" || this.room?.phase === "PRE_ROUND_FREEZE");
+    const applyAtRespawn = isTdm && (this.room?.phase === "LIVE" || this.room?.phase === "COUNTDOWN");
     const bp = WEAPON_REGISTRY[primary.weaponId] ?? WEAPON_REGISTRY.m416;
     const primaries = WEAPON_LIST.filter((w) => w.category !== "PISTOL");
     const slots: { slot: AttachmentSlot; label: string }[] = [
@@ -456,7 +474,7 @@ export class ShooterHud {
   }
 
   private saveMatchLoadout(): void {
-    if (this.room?.mode === "TDM") this.getTdmKits(this.profile.tdmKitSlot ?? 0);
+    if (this.room && this.room.mode !== "WARMUP") this.getTdmKits(this.profile.tdmKitSlot ?? 0);
     saveGuestProfile(this.profile);
     this.callbacks.onUpdateLoadout(this.profile.loadout);
   }
@@ -502,7 +520,7 @@ export class ShooterHud {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <div>
           <div style="font-size:16px;font-weight:900;">${mapName} // ${room.mode} (${room.code})</div>
-          <div style="font-size:11px;color:var(--text-muted);">Round ${room.roundNumber} • ${room.phase.replace(/_/g, " ")}</div>
+          <div style="font-size:11px;color:var(--text-muted);">${this.describeMatchRules(room)}</div>
         </div>
         <div style="font-family:var(--font-mono);font-size:20px;font-weight:900;">
           <span style="color:#38bdf8;">${room.scoreA}</span> : <span style="color:#f87171;">${room.scoreB}</span>
@@ -540,6 +558,31 @@ export class ShooterHud {
     if (this.room) this.refreshPausePanel(this.room);
   }
 
+  /** Keeps the pause-menu slider in step with hotkey and settings-modal changes. */
+  syncVolumeControls(volume: number): void {
+    const pct = Math.round(volume * 100);
+    const slider = this.root.querySelector<HTMLInputElement>("#pause-volume");
+    if (slider) slider.value = String(pct);
+    const label = this.root.querySelector("#pause-volume-val");
+    if (label) label.textContent = `${pct}%`;
+  }
+
+  showVolumeToast(volume: number, muted: boolean): void {
+    const el = this.root.querySelector<HTMLElement>("#hud-volume-toast");
+    if (!el) return;
+    const pct = muted ? 0 : Math.round(volume * 100);
+    const icon = this.root.querySelector("#hud-volume-icon");
+    if (icon) icon.textContent = muted || pct === 0 ? "🔇" : pct < 40 ? "🔉" : "🔊";
+    const label = this.root.querySelector("#hud-volume-pct");
+    if (label) label.textContent = muted ? "MUTED" : `${pct}%`;
+    const fill = this.root.querySelector<HTMLElement>("#hud-volume-fill");
+    if (fill) fill.style.width = `${pct}%`;
+    el.classList.toggle("muted", muted);
+    el.classList.remove("hidden");
+    if (this.volumeToastTimeout) clearTimeout(this.volumeToastTimeout);
+    this.volumeToastTimeout = setTimeout(() => el.classList.add("hidden"), 1400);
+  }
+
   updateRoom(room: RoomStateBroadcast): void {
     const previousMap = this.room?.mapId;
     if (room.phase !== "MATCH_END") this.root.querySelector("#hud-match-results")?.classList.add("hidden");
@@ -562,46 +605,13 @@ export class ShooterHud {
     setText("#hud-score-a", String(room.scoreA));
     setText("#hud-score-b", String(room.scoreB));
 
-    const mins = Math.floor(room.roundTimeRemainingSec / 60);
-    const secs = room.roundTimeRemainingSec % 60;
-    setText("#hud-timer", room.phase === "WARMUP" ? "—" : `${mins}:${secs < 10 ? "0" : ""}${secs}`);
-    setText(
-      "#hud-phase",
-      room.bombPlanted
-        ? `BOMB ${room.bombTimerSec}s`
-        : room.phase === "WARMUP"
-          ? room.matchRules?.ranked ? `RANKED TDM · ${room.players.length}/8` : "WARM-UP"
-          : room.mode === "TDM" && room.phase === "LIVE_ROUND"
-            ? `${room.matchRules?.ranked ? "RANKED TDM" : "TDM"} · FIRST TO ${TDM_SCORE_TARGET}`
-            : `R${room.roundNumber} • ${room.phase.replace(/_/g, " ")}`
-    );
+    setText("#hud-timer", this.formatClock(room));
+    setText("#hud-phase", this.describeMatchRules(room));
 
     const local = room.players.find((p) => p.id === this.localPlayerId);
     const hostStartBtn = this.root.querySelector("#hud-host-start");
     if (hostStartBtn) {
       hostStartBtn.classList.toggle("hidden", !(local?.isHost && !room.matchRules?.ranked && room.phase === "WARMUP" && room.mode !== "WARMUP"));
-    }
-
-    const otBar = this.root.querySelector("#hud-overtime-bar");
-    if (otBar) {
-      otBar.classList.toggle("hidden", !room.overtimeActive && !room.bombPlanted);
-      if (room.bombPlanted) {
-        setText("#hud-ot-label", `BOMB PLANTED — DETONATION IN ${room.bombTimerSec}s`);
-        const fill = this.root.querySelector("#hud-ot-fill") as HTMLElement | null;
-        if (fill) fill.style.width = `${Math.min(100, (room.bombTimerSec / 25) * 100)}%`;
-      } else if (room.overtimeActive) {
-        const pct = Math.max(room.overtimeProgressA, room.overtimeProgressB) / OVERTIME_CAPTURE_NEEDED_SEC;
-        setText(
-          "#hud-ot-label",
-          room.overtimeHolder === "CONTESTED"
-            ? "OVERTIME ZONE CONTESTED!"
-            : room.overtimeHolder
-              ? `TEAM ${room.overtimeHolder} CAPTURING OVERTIME ZONE`
-              : "OVERTIME ZONE UNLOCKED (MID)"
-        );
-        const fill = this.root.querySelector("#hud-ot-fill") as HTMLElement | null;
-        if (fill) fill.style.width = `${Math.min(100, pct * 100)}%`;
-      }
     }
 
     if (this.scoreboardOpen) this.renderScoreboardOverlay(room);
@@ -653,7 +663,7 @@ export class ShooterHud {
     const hostCtrl = this.root.querySelector("#pause-host-controls");
     if (hostCtrl) {
       hostCtrl.classList.toggle("hidden", !local?.isHost || room.phase === "MATCH_END" ||
-        (room.mode === "TDM" && room.phase !== "WARMUP"));
+        (room.mode !== "WARMUP" && room.phase !== "WARMUP"));
     }
     this.root.querySelector("#pause-start-match")?.classList.toggle("hidden", room.mode === "WARMUP" || room.phase !== "WARMUP");
 
@@ -713,14 +723,6 @@ export class ShooterHud {
       ctx.fillStyle = b.material === "EXPLOSIVE_BARREL" ? "#dc2626" : b.material === "GLASS" ? "#38bdf8" : "#334155";
       ctx.fillRect(bx - bw * 0.5, by - bd * 0.5, bw, bd);
     }
-
-    // Overtime Capture Zone ring
-    const [ox, oy] = toMini(map.overtimeZone.center.x, map.overtimeZone.center.z);
-    ctx.strokeStyle = room.overtimeActive ? "#f59e0b" : "rgba(56,189,248,0.5)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(ox, oy, map.overtimeZone.radius * scale, 0, Math.PI * 2);
-    ctx.stroke();
 
     // Teammates & spotted enemy blips
     for (const mate of snap.minimapTeammates) {
@@ -936,13 +938,11 @@ export class ShooterHud {
 
     let hint = `WASD Move · ${key("primary")}/${key("secondary")} Weapons · Scroll/${key("swapWeapon")} Swap · V Optic · ${key("reload")} Reload · ${key("crouch")} Crouch`;
     if (snap.respawnSeconds !== null) {
-      hint = `Respawning in ${Math.max(1, Math.ceil(snap.respawnSeconds))}s${this.room?.mode === "TDM" ? " · L Loadout" : ""}`;
+      hint = `Respawning in ${Math.max(1, Math.ceil(snap.respawnSeconds))}s${this.room && this.room.mode !== "WARMUP" ? " · L Loadout" : ""}`;
     } else if (!snap.alive) {
-      hint = snap.spectatingName ? `Spectating ${snap.spectatingName}` : "Waiting for the next round";
-    } else if (this.room?.phase === "PRE_ROUND_FREEZE") {
-      hint = "Round starting. Movement unlocks when the countdown ends.";
-    } else if (snap.canPlantOrDefuse) {
-      hint = `Hold F to ${snap.canPlantOrDefuse.toLowerCase()}`;
+      hint = snap.spectatingName ? `Spectating ${snap.spectatingName}` : "Respawning…";
+    } else if (this.room?.phase === "COUNTDOWN") {
+      hint = "Match starting. Movement unlocks when the countdown ends.";
     } else if (!snap.pointerLocked && !this.paused) {
       hint = "F2 locks mouse aim • Escape releases it";
     }
@@ -987,44 +987,119 @@ export class ShooterHud {
 
   pushKillFeed(msg: Extract<ServerToClientMessage, { type: "KILL_FEED" }>): void {
     const wName = msg.weaponId === "knife" ? "Combat Knife" : WEAPON_REGISTRY[msg.weaponId]?.name ?? msg.weaponId;
-    const tags = [msg.isHeadshot ? "HEADSHOT" : "", msg.isWallbang ? "WALLBANG" : ""].filter(Boolean).join(" • ");
+    const me = this.profile.callsign;
+    const localTeam = this.room?.players.find((p) => p.id === this.localPlayerId)?.team;
+    const nameColor = (team: string, name: string): string =>
+      name === me ? "#fbbf24" : localTeam ? (team === localTeam ? "#38bdf8" : "#f87171") : team === "A" ? "#38bdf8" : "#f87171";
+    const tags = [msg.isHeadshot ? "HS" : "", msg.isWallbang ? "WB" : ""].filter(Boolean).join(" ");
     const html = `
-      <span style="color:${msg.killerTeam === "A" ? "#38bdf8" : "#f87171"}">${escapeText(msg.killerName)}</span>
-      <span style="color:var(--text-muted);margin:0 6px;">[${escapeText(wName)}${tags ? ` • ${tags}` : ""}]</span>
-      <span style="color:${msg.victimTeam === "A" ? "#38bdf8" : "#f87171"}">${escapeText(msg.victimName)}</span>
+      <span class="kf-name" style="color:${nameColor(msg.killerTeam, msg.killerName)}">${escapeText(msg.killerName)}</span>
+      <span class="kf-weapon">${escapeText(wName)}${tags ? ` <b class="kf-tag">${tags}</b>` : ""}</span>
+      <span class="kf-name" style="color:${nameColor(msg.victimTeam, msg.victimName)}">${escapeText(msg.victimName)}</span>
     `;
-    this.killfeedItems.unshift({ id: Date.now(), html });
-    if (this.killfeedItems.length > 5) this.killfeedItems.pop();
+    const involvesMe = msg.killerName === me || msg.victimName === me;
+    this.killfeedItems.unshift({ id: Date.now() + Math.random(), html, mine: involvesMe, expiresAt: Date.now() + KILLFEED_LIFETIME_MS });
+    if (this.killfeedItems.length > 6) this.killfeedItems.pop();
+    this.renderKillFeed();
+    if (this.killfeedTimer) clearInterval(this.killfeedTimer);
+    this.killfeedTimer = setInterval(() => this.renderKillFeed(), 500);
 
-    const kf = this.root.querySelector("#hud-killfeed");
-    if (kf) {
-      kf.innerHTML = this.killfeedItems
-        .map((it) => `<div class="killfeed-item">${it.html}</div>`)
-        .join("");
-    }
-
-    if (msg.isRoundWinningKill) {
-      this.showBanner(
-        `<div style="font-size:11px;color:var(--accent-amber);letter-spacing:1.5px;">FINAL KILLCAM // 0.25x SLOW-MO</div>
-         <div style="font-size:20px;font-weight:900;margin-top:4px;">${escapeText(msg.killerName)} eliminated ${escapeText(msg.victimName)}</div>
-         <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${escapeText(wName)} • ${msg.distanceM}m • ${msg.killerHpLeft} HP Remaining</div>`,
-        3200
+    const selfKill = msg.killerName === msg.victimName;
+    const teamKill = msg.killerTeam === msg.victimTeam && !selfKill;
+    if (msg.killerName === me && !selfKill) {
+      const multiLabel = ["", "", "DOUBLE KILL", "TRIPLE KILL", "QUAD KILL"][msg.multi] ?? (msg.multi > 4 ? `${msg.multi}x MULTI KILL` : "");
+      const details = [wName, msg.distanceM > 0 ? `${msg.distanceM} m` : ""].filter(Boolean).join(" · ");
+      const chips = [
+        msg.isHeadshot ? `<span class="kb-chip kb-hs">HEADSHOT</span>` : "",
+        msg.isWallbang ? `<span class="kb-chip kb-wb">WALLBANG</span>` : "",
+        msg.distanceM >= 50 ? `<span class="kb-chip kb-lr">LONG RANGE</span>` : "",
+        multiLabel ? `<span class="kb-chip kb-multi">${multiLabel}</span>` : "",
+        msg.streak >= 3 && msg.streak % 1 === 0 && msg.multi < 2 ? `<span class="kb-chip kb-streak">${msg.streak} KILL STREAK</span>` : "",
+      ].join("");
+      this.showKillBanner(
+        `<div class="kb-tag-line">${teamKill ? "TEAM KILL" : "ELIMINATED"}</div>
+         <div class="kb-name">${escapeText(msg.victimName)}</div>
+         <div class="kb-chips">${chips}</div>
+         <div class="kb-detail">${escapeText(details)}</div>`,
+        msg.isHeadshot ? "headshot" : multiLabel ? "multi" : teamKill ? "team" : "kill",
+        2200
+      );
+    } else if (msg.victimName === me && !selfKill) {
+      this.showKillBanner(
+        `<div class="kb-tag-line">KILLED BY</div>
+         <div class="kb-name">${escapeText(msg.killerName)}</div>
+         <div class="kb-detail">${escapeText(wName)} · ${msg.distanceM} m · ${Math.max(0, Math.round(msg.killerHpLeft))} HP left${msg.isHeadshot ? " · HEADSHOT" : ""}</div>`,
+        "death",
+        2800
       );
     }
   }
 
-  showRoundBanner(msg: Extract<ServerToClientMessage, { type: "ROUND_BANNER" }>): void {
+  private renderKillFeed(): void {
+    const now = Date.now();
+    for (let i = this.killfeedItems.length - 1; i >= 0; i--) {
+      if (this.killfeedItems[i].expiresAt <= now) this.killfeedItems.splice(i, 1);
+    }
+    const kf = this.root.querySelector("#hud-killfeed");
+    if (kf) {
+      kf.innerHTML = this.killfeedItems
+        .map((it) => `<div class="killfeed-item${it.mine ? " mine" : ""}${it.expiresAt - now < 700 ? " fading" : ""}">${it.html}</div>`)
+        .join("");
+    }
+    if (!this.killfeedItems.length && this.killfeedTimer) {
+      clearInterval(this.killfeedTimer);
+      this.killfeedTimer = null;
+    }
+  }
+
+  private showKillBanner(html: string, kind: "kill" | "headshot" | "multi" | "team" | "death", durationMs: number): void {
+    const el = this.root.querySelector("#hud-killbanner") as HTMLElement | null;
+    if (!el) return;
+    el.className = `killbanner kb-${kind}`;
+    el.innerHTML = html;
+    // Restart the pop-in animation when kills land back to back.
+    void el.offsetWidth;
+    el.classList.add("kb-show");
+    if (this.killBannerTimeout) clearTimeout(this.killBannerTimeout);
+    this.killBannerTimeout = setTimeout(() => el.classList.add("hidden"), durationMs);
+  }
+
+  showMatchEnded(msg: Extract<ServerToClientMessage, { type: "MATCH_ENDED" }>): void {
+    const local = this.room?.players.find((p) => p.id === this.localPlayerId);
     const title =
       msg.winnerTeam === "DRAW"
-        ? "ROUND DRAW"
-        : msg.isMatchOver
-          ? `TEAM ${msg.winnerTeam} WINS THE MATCH!`
-          : `TEAM ${msg.winnerTeam} WINS THE ROUND`;
+        ? "DRAW"
+        : local
+          ? msg.winnerTeam === local.team ? "VICTORY" : "DEFEAT"
+          : `TEAM ${msg.winnerTeam} WINS`;
+    const color = msg.winnerTeam === "DRAW" ? "#fbbf24" : local && msg.winnerTeam !== local.team ? "#f87171" : "#4ade80";
     this.showBanner(
-      `<div style="font-size:22px;font-weight:900;color:${msg.winnerTeam === "A" ? "#38bdf8" : "#f87171"}">${title}</div>
+      `<div style="font-size:26px;font-weight:900;letter-spacing:2px;color:${color}">${title}</div>
        <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">${escapeText(msg.reason)}</div>`,
       3400
     );
+  }
+
+  private formatClock(room: RoomStateBroadcast): string {
+    const fmt = (total: number) => `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+    if (room.phase === "WARMUP") return "—";
+    if (room.phase === "COUNTDOWN") return String(Math.max(1, room.timeRemainingSec));
+    if (room.phase === "MATCH_END") return "END";
+    if ((room.matchRules?.timeLimitSeconds ?? 0) === 0) return fmt(room.elapsedSec);
+    return fmt(room.timeRemainingSec);
+  }
+
+  private describeMatchRules(room: RoomStateBroadcast): string {
+    if (room.phase === "WARMUP") {
+      return room.mode === "WARMUP" ? "WARM-UP" : room.matchRules?.ranked ? `RANKED · ${room.players.length}/${MODE_CONFIGS[room.mode].maxPlayers}` : "WAITING FOR HOST";
+    }
+    if (room.phase === "COUNTDOWN") return "MATCH STARTING";
+    if (room.phase === "MATCH_END") return "MATCH OVER";
+    const rules = room.matchRules;
+    const parts: string[] = [rules?.ranked ? "RANKED" : room.mode];
+    parts.push(rules && rules.scoreLimit > 0 ? `FIRST TO ${rules.scoreLimit}` : "NO KILL LIMIT");
+    if (rules && rules.timeLimitSeconds === 0) parts.push("UNLIMITED TIME");
+    return parts.join(" · ");
   }
 
   showDangerPingNotice(callsign: string | null): void {

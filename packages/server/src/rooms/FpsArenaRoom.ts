@@ -1,11 +1,8 @@
 import {
   ARMOR_ABSORB_RATIO,
-  ATTACHMENT_LIST,
+  COUNTDOWN_SEC,
   BASE_ARMOR,
   BASE_HP,
-  BOMB_DETONATE_SEC,
-  BOMB_PLANT_SEC,
-  BOMB_DEFUSE_SEC,
   FIXED_DT,
   HEAL_DELAY_SEC,
   HEAL_HP_PER_SEC,
@@ -17,18 +14,13 @@ import {
   MELEE_COOLDOWN_MS,
   MELEE_RANGE,
   MODE_CONFIGS,
-  OVERTIME_CAPTURE_NEEDED_SEC,
-  OVERTIME_UNLOCK_SEC,
-  PRE_ROUND_FREEZE_SEC,
   PRACTICE_TARGET_RADIUS,
   PRIMARY_WEAPON_IDS,
   RECONNECT_GRACE_SEC,
   REPLAY_SAMPLE_HZ,
-  ROUND_END_DELAY_SEC,
   SKIN_LIST,
-  TDM_PROTECTION_SEC,
-  TDM_RESPAWN_SEC,
-  TDM_SCORE_TARGET,
+  SPAWN_PROTECTION_SEC,
+  RESPAWN_SEC,
   THROWABLE_ORDER,
   THROWABLE_REGISTRY,
   WEAPON_REGISTRY,
@@ -211,10 +203,10 @@ export function defaultPlayerLoadout(): PlayerLoadoutPayload {
 
 /**
  * Authoritative headless FPS arena room supporting:
- * - 1v1 Aim Duel, 2v2 Gunfight (mirrored random loadouts), 4v4 Tactical Wipeout, & Warm-Up
+ * - Continuous deathmatch (1v1, 2v2, 4v4 TDM) with respawns, a score limit and an optional time limit, & Warm-Up
  * - 60Hz Rapier character & ballistic simulation with 1-second Lag Rewind
  * - 20s Guest UUID reconnection grace & Automatic Host Migration
- * - Thin-cover wallbangs, destructible glass/barrels, Frag/Smoke/Flashbang, & 45s Overtime Capture Zone
+ * - Thin-cover wallbangs, destructible glass/barrels, & Frag/Smoke/Flashbang
  */
 export class FpsArenaRoom {
   public readonly code: string;
@@ -241,24 +233,11 @@ export class FpsArenaRoom {
   private readonly barrelFuses = new Map<string, { timer: number; attacker: RoomPlayer }>();
 
   private phase: RoundPhase = "WARMUP";
-  private roundNumber = 0;
-  private roundElapsedSec = 0;
   private phaseTimerSec = 0;
+  private matchElapsedSec = 0;
   private scoreA = 0;
   private scoreB = 0;
-  private overtimeActive = false;
-  private overtimeHolder: TeamId | "CONTESTED" | null = null;
-  private overtimeProgressA = 0;
-  private overtimeProgressB = 0;
-  private bombPlanted = false;
-  private bombTimerSec = 0;
-  private bombPlanterTeam: TeamId | null = null;
-  private plantingPlayerId: string | null = null;
-  private plantingProgressSec = 0;
-  private defusingPlayerId: string | null = null;
-  private defusingProgressSec = 0;
 
-  private gunfightLoadout?: PlayerLoadoutPayload;
   private mapVoteOptions: string[] = [];
   private mapVotes = new Map<string, string>(); // playerId -> mapId
   private nextPlayerIndex = 1;
@@ -334,7 +313,18 @@ export class FpsArenaRoom {
       humanCount,
       maxPlayers: MODE_CONFIGS[this.mode].maxPlayers,
       ranked: this.matchRules.ranked,
+      timeLimitSeconds: this.matchRules.timeLimitSeconds,
+      scoreLimit: this.matchRules.scoreLimit,
+      timeRemainingSec: this.timeRemainingSec(),
+      scoreA: this.scoreA,
+      scoreB: this.scoreB,
     };
+  }
+
+  private timeRemainingSec(): number {
+    if (this.phase === "COUNTDOWN") return Math.max(0, Math.ceil(this.phaseTimerSec));
+    if (this.phase === "LIVE" && this.matchRules.timeLimitSeconds > 0) return Math.max(0, Math.ceil(this.phaseTimerSec));
+    return this.phase === "WARMUP" ? this.matchRules.timeLimitSeconds : 0;
   }
 
   getHumanCount(): number {
@@ -386,9 +376,9 @@ export class FpsArenaRoom {
     }
 
     const team = this.pickBalancedTeam();
-    const joiningLiveTdm = this.mode === "TDM" && this.phase === "LIVE_ROUND";
-    const spawn = joiningLiveTdm
-      ? this.pickTdmSpawn(team, this.nextPlayerIndex)
+    const joiningLive = this.phase === "LIVE";
+    const spawn = joiningLive
+      ? this.pickSafeSpawn(team, this.nextPlayerIndex)
       : this.getSpawnForTeam(team, this.players.size);
     const id = `p_${this.nextPlayerIndex}`;
     const playerIndex = this.nextPlayerIndex++;
@@ -407,7 +397,7 @@ export class FpsArenaRoom {
       spawn,
     });
 
-    if (joiningLiveTdm) player.spawnProtection = TDM_PROTECTION_SEC;
+    if (joiningLive) player.spawnProtection = SPAWN_PROTECTION_SEC;
     this.players.set(id, player);
     this.syncBotFill();
     this.checkAutoMatchStart();
@@ -433,9 +423,9 @@ export class FpsArenaRoom {
     const timeout = setTimeout(() => {
       this.pendingReconnects.delete(player.guestUuid);
       this.removePlayerInternal(player.id);
-      if (this.matchRules.ranked && this.phase === "LIVE_ROUND" &&
+      if (this.matchRules.ranked && this.phase === "LIVE" &&
         !Array.from(this.players.values()).some((other) => other.team === player.team)) {
-        this.finishTdm("Opponent team forfeited", player.team === "A" ? "B" : "A");
+        this.finishMatch("Opponent team forfeited", player.team === "A" ? "B" : "A");
       }
       this.syncBotFill();
       this.broadcastRoomState();
@@ -480,7 +470,7 @@ export class FpsArenaRoom {
     loadout: PlayerLoadoutPayload;
     spawn: { position: Vec3; yaw: number };
   }): RoomPlayer {
-    const activeKit = this.mode === "2v2" && this.gunfightLoadout ? this.gunfightLoadout : opts.loadout;
+    const activeKit = opts.loadout;
     const effPrimary = computeEffectiveWeaponStats(
       activeKit.primary.weaponId,
       activeKit.primary.attachments
@@ -560,7 +550,7 @@ export class FpsArenaRoom {
     return list[Math.abs(slotSeed) % list.length];
   }
 
-  private pickTdmSpawn(team: TeamId, seed: number) {
+  private pickSafeSpawn(team: TeamId, seed: number) {
     const spawns = team === "A" ? this.map.spawnsA : this.map.spawnsB;
     let best = this.getSpawnForTeam(team, seed);
     let bestScore = -Infinity;
@@ -612,8 +602,8 @@ export class FpsArenaRoom {
     while (this.players.size < desiredTotal) {
       const team = this.pickBalancedTeam();
       const idx = this.nextPlayerIndex++;
-      const joiningLiveTdm = this.mode === "TDM" && this.phase === "LIVE_ROUND";
-      const spawn = joiningLiveTdm ? this.pickTdmSpawn(team, idx) : this.getSpawnForTeam(team, idx);
+      const joiningLive = this.phase === "LIVE";
+      const spawn = joiningLive ? this.pickSafeSpawn(team, idx) : this.getSpawnForTeam(team, idx);
       const id = `bot_${idx}`;
       const botWeapon = PRIMARY_WEAPON_IDS[idx % PRIMARY_WEAPON_IDS.length];
       const botLoadout: PlayerLoadoutPayload = {
@@ -637,7 +627,7 @@ export class FpsArenaRoom {
         loadout: botLoadout,
         spawn,
       });
-      if (joiningLiveTdm) bot.spawnProtection = TDM_PROTECTION_SEC;
+      if (joiningLive) bot.spawnProtection = SPAWN_PROTECTION_SEC;
       this.players.set(id, bot);
     }
   }
@@ -661,19 +651,18 @@ export class FpsArenaRoom {
 
     switch (msg.type) {
       case "SET_LOADOUT": {
-        if (this.mode === "TDM" && (this.phase === "LIVE_ROUND" || this.phase === "PRE_ROUND_FREEZE")) {
+        if (this.mode !== "WARMUP" && (this.phase === "LIVE" || this.phase === "COUNTDOWN")) {
           player.pendingLoadout = msg.loadout;
           break;
         }
         player.pendingLoadout = undefined;
         this.applyPlayerLoadout(player, msg.loadout);
-        if (this.mode === "TDM") player.throwableStock = createThrowableStock(msg.loadout.throwable, msg.loadout.tdmThrowables);
+        if (this.mode !== "WARMUP") player.throwableStock = createThrowableStock(msg.loadout.throwable, msg.loadout.tdmThrowables);
         this.broadcastRoomState();
         break;
       }
       case "SET_OPTIC": {
-        // Gunfight kits are fixed for fairness; every other mode allows swapping optics on the fly.
-        if (this.mode === "2v2" || !player.alive) break;
+        if (!player.alive) break;
         const slot = msg.slot === 1 ? 1 : 0;
         const cfg = slot === 0 ? player.loadout.primary : player.loadout.secondary;
         const category = (slot === 0 ? player.effectivePrimary : player.effectiveSecondary).blueprint.category;
@@ -702,7 +691,7 @@ export class FpsArenaRoom {
       case "UPDATE_ROOM_SETTINGS": {
         if (!player.isHost || this.matchRules.ranked) return;
         let mapChanged = false;
-        const tdmLocked = (this.mode === "TDM" || msg.mode === "TDM") && this.phase !== "WARMUP";
+        const tdmLocked = this.phase !== "WARMUP";
         if (!tdmLocked && msg.mapId && MAP_REGISTRY[msg.mapId] && msg.mapId !== this.mapId) {
           this.mapId = msg.mapId;
           this.map = MAP_REGISTRY[this.mapId];
@@ -713,7 +702,7 @@ export class FpsArenaRoom {
           this.mode = msg.mode;
         }
         if (this.phase === "WARMUP" && (msg.matchRules || msg.mode)) {
-          this.matchRules = normalizeMatchRules(this.mode, { ...msg.matchRules, ranked: false });
+          this.matchRules = normalizeMatchRules(this.mode, { ...this.matchRules, ...msg.matchRules, ranked: false });
         }
         if (msg.botFill !== undefined) this.botFill = msg.botFill;
         if ((msg.botDifficulty === "EASY" || msg.botDifficulty === "NORMAL" || msg.botDifficulty === "PRO") &&
@@ -796,36 +785,6 @@ export class FpsArenaRoom {
         }
         break;
       }
-      case "BOMB_ACTION": {
-        if (this.mode !== "4v4" || !player.alive) return;
-        if (msg.action === "PLANT" && player.team === "A" && !this.bombPlanted) {
-          const dist = Math.hypot(
-            player.state.position.x - this.map.bombSite.center.x,
-            player.state.position.z - this.map.bombSite.center.z
-          );
-          if (dist <= this.map.bombSite.radius) {
-            this.plantingPlayerId = player.id;
-          }
-        } else if (msg.action === "DEFUSE" && player.team === "B" && this.bombPlanted) {
-          const dist = Math.hypot(
-            player.state.position.x - this.map.bombSite.center.x,
-            player.state.position.z - this.map.bombSite.center.z
-          );
-          if (dist <= this.map.bombSite.radius + 1.2) {
-            this.defusingPlayerId = player.id;
-          }
-        } else if (msg.action === "CANCEL") {
-          if (this.plantingPlayerId === player.id) {
-            this.plantingPlayerId = null;
-            this.plantingProgressSec = 0;
-          }
-          if (this.defusingPlayerId === player.id) {
-            this.defusingPlayerId = null;
-            this.defusingProgressSec = 0;
-          }
-        }
-        break;
-      }
       case "VOTE_MAP": {
         if (this.phase === "MATCH_END" && MAP_REGISTRY[msg.mapId]) {
           this.mapVotes.set(player.id, msg.mapId);
@@ -863,7 +822,7 @@ export class FpsArenaRoom {
 
   private applyPlayerLoadout(player: RoomPlayer, loadout: PlayerLoadoutPayload): void {
     player.loadout = loadout;
-    const effectiveKit = this.mode === "2v2" && this.gunfightLoadout ? this.gunfightLoadout : loadout;
+    const effectiveKit = loadout;
     player.effectivePrimary = computeEffectiveWeaponStats(
       effectiveKit.primary.weaponId,
       effectiveKit.primary.attachments
@@ -897,58 +856,20 @@ export class FpsArenaRoom {
       : [];
     this.scoreA = 0;
     this.scoreB = 0;
-    this.roundNumber = 0;
     for (const p of this.players.values()) {
       p.kills = 0;
       p.deaths = 0;
       p.assists = 0;
       p.combatStats = emptyCombatStats();
     }
-    this.startNextRound();
-  }
-
-  private startNextRound(): void {
-    this.roundNumber++;
-    this.phase = "PRE_ROUND_FREEZE";
-    this.phaseTimerSec = PRE_ROUND_FREEZE_SEC;
-    this.roundElapsedSec = 0;
-    this.overtimeActive = false;
-    this.overtimeHolder = null;
-    this.overtimeProgressA = 0;
-    this.overtimeProgressB = 0;
-    this.bombPlanted = false;
-    this.bombTimerSec = 0;
-    this.bombPlanterTeam = null;
-    this.plantingPlayerId = null;
-    this.plantingProgressSec = 0;
-    this.defusingPlayerId = null;
-    this.defusingProgressSec = 0;
+    this.phase = "COUNTDOWN";
+    this.phaseTimerSec = COUNTDOWN_SEC;
+    this.matchElapsedSec = 0;
     this.throwables.length = 0;
     this.replay.clear();
     this.pickups.reset(this.map);
     this.barrelFuses.clear();
     this.physWorld.resetDestructibles();
-
-    // 2v2 Gunfight mirrored random loadouts every 2 rounds
-    if (this.mode === "2v2" && (this.roundNumber === 1 || this.roundNumber % 2 === 1)) {
-      const randWeapon =
-        PRIMARY_WEAPON_IDS[Math.floor(Math.random() * PRIMARY_WEAPON_IDS.length)];
-      const randSkin = SKIN_LIST[Math.floor(Math.random() * SKIN_LIST.length)].id;
-      const opticChoices = ATTACHMENT_LIST.filter((a) => a.slot === "optic");
-      const randOptic = opticChoices[Math.floor(Math.random() * opticChoices.length)].id;
-      this.gunfightLoadout = {
-        primary: {
-          weaponId: randWeapon,
-          skinId: randSkin,
-          attachments: { optic: randOptic },
-        },
-        secondary: { weaponId: "deagle", skinId: randSkin, attachments: {} },
-        throwable: this.roundNumber % 3 === 0 ? "smoke" : "frag",
-      };
-    } else if (this.mode !== "2v2") {
-      this.gunfightLoadout = undefined;
-    }
-
     this.resetPlayersToSpawns();
     this.broadcastRoomState();
   }
@@ -971,7 +892,7 @@ export class FpsArenaRoom {
     player.throwablesLeft = 2;
     player.respawnTimer = 0;
     player.healingDelay = 0;
-    player.spawnProtection = protectedSpawn ? TDM_PROTECTION_SEC : 0;
+    player.spawnProtection = protectedSpawn ? SPAWN_PROTECTION_SEC : 0;
     player.nextShotAllowedAtMs = 0;
     player.nextMeleeAt = 0;
     player.nextBotUtilityTick = this.tickCounter + 240 + player.playerIndex % 60;
@@ -987,9 +908,9 @@ export class FpsArenaRoom {
   private tick(movementClockMs: number): void {
     this.tickCounter++;
     const nowMs = Date.now();
-    const canMove = this.phase !== "PRE_ROUND_FREEZE" && this.phase !== "MATCH_END";
+    const canMove = this.phase !== "COUNTDOWN" && this.phase !== "MATCH_END";
     const canShoot = isCombatPhase(this.phase);
-    const liveTdm = this.mode === "TDM" && this.phase === "LIVE_ROUND";
+    const live = this.phase === "LIVE";
 
     const activeSmokes: SmokeCloudVolume[] = [];
     for (const t of this.throwables) {
@@ -1010,19 +931,19 @@ export class FpsArenaRoom {
     const frameHitboxes = new Map<string, PlayerHitboxes>();
     for (const p of this.players.values()) {
       if (!p.alive) {
-        if (this.phase === "WARMUP" || liveTdm) {
+        if (this.phase === "WARMUP" || live) {
           p.respawnTimer -= FIXED_DT;
           if (p.respawnTimer <= 1e-6) {
             const seed = p.playerIndex + this.tickCounter;
-            const spawn = liveTdm ? this.pickTdmSpawn(p.team, seed) : this.getSpawnForTeam(p.team, seed);
-            this.spawnPlayer(p, spawn, liveTdm);
+            const spawn = live ? this.pickSafeSpawn(p.team, seed) : this.getSpawnForTeam(p.team, seed);
+            this.spawnPlayer(p, spawn, live);
             this.broadcastRoomState();
           }
         }
         continue;
       }
 
-      if (liveTdm) {
+      if (live) {
         p.spawnProtection = Math.max(0, p.spawnProtection - FIXED_DT);
       }
       if (canShoot) {
@@ -1042,7 +963,6 @@ export class FpsArenaRoom {
           this.physWorld,
           this.map,
           activeSmokes,
-          this.overtimeActive,
           canShoot && canMove,
           this.botDifficulty,
           FIXED_DT
@@ -1067,10 +987,10 @@ export class FpsArenaRoom {
         player.sender?.sendJson({ type: "PICKUP_COLLECTED", kind });
       })) this.broadcastRoomState();
     }
-    if (this.mode === "TDM" && this.phase === "MATCH_END") this.throwables.length = 0;
+    if (this.phase === "MATCH_END") this.throwables.length = 0;
     else this.stepThrowables(FIXED_DT);
     this.stepBarrelFuses(FIXED_DT);
-    this.stepRoundStateMachine(FIXED_DT);
+    this.stepMatchClock(FIXED_DT);
 
     // Broadcast 20Hz binary transform snapshots (every 3rd physics tick)
     if (this.tickCounter % 3 === 0) {
@@ -1174,7 +1094,7 @@ export class FpsArenaRoom {
       this.tryBotFire(bot, eye, aim, now);
       return true;
     }
-    if ((this.mode === "TDM" ? bot.throwableStock.frag : bot.throwablesLeft) <= 0) return false;
+    if (bot.throwableStock.frag <= 0) return false;
     const dx = target.x - eye.x;
     const dz = target.z - eye.z;
     const distance = Math.hypot(dx, dz);
@@ -1495,9 +1415,7 @@ export class FpsArenaRoom {
     shotHits?: HitConfirmation[]
   ): void {
     if (!victim.alive || rawDamage <= 0 || victim.spawnProtection > 0 || !isCombatPhase(this.phase)) return;
-    const isTdm = this.mode === "TDM";
-    const liveTdm = isTdm && this.phase === "LIVE_ROUND";
-    if (isTdm && !liveTdm && this.phase !== "WARMUP") return;
+    const live = this.phase === "LIVE";
     const enemyHit = attacker.team !== victim.team;
     if (!enemyHit && attacker.id !== victim.id && !this.matchRules.friendlyFire) return;
 
@@ -1577,8 +1495,8 @@ export class FpsArenaRoom {
           if (frames.length) victim.sender.sendJson({ type: "DEATH_REPLAY", killerId: attacker.id, killerName: attacker.callsign, frames });
         }
       }
-      victim.respawnTimer = liveTdm ? TDM_RESPAWN_SEC : 1.8;
-      if (liveTdm && attacker.team !== victim.team) {
+      victim.respawnTimer = live ? RESPAWN_SEC : 1.8;
+      if (live && attacker.team !== victim.team) {
         if (attacker.team === "A") this.scoreA++;
         else this.scoreB++;
       }
@@ -1588,9 +1506,8 @@ export class FpsArenaRoom {
       victim.ledger.killerHpLeft = attacker.hp;
       victim.ledger.distanceM = Math.round(distanceM);
 
-      const isRoundWinningKill = isTdm
-        ? liveTdm && (this.scoreA >= TDM_SCORE_TARGET || this.scoreB >= TDM_SCORE_TARGET)
-        : this.phase !== "WARMUP" && this.isTeamEliminated(victim.team);
+      const scoreLimit = this.matchRules.scoreLimit;
+      const isMatchWinningKill = live && scoreLimit > 0 && (this.scoreA >= scoreLimit || this.scoreB >= scoreLimit);
 
       this.broadcastJson({
         type: "KILL_FEED",
@@ -1602,8 +1519,10 @@ export class FpsArenaRoom {
         isHeadshot: hitZone === "HEAD",
         isWallbang,
         distanceM: Math.round(distanceM),
-        isRoundWinningKill,
+        isMatchWinningKill,
         killerHpLeft: attacker.hp,
+        streak: enemyHit ? attacker.streak : 0,
+        multi: enemyHit ? attacker.multikill : 0,
       });
 
       victim.sender?.sendJson({
@@ -1611,13 +1530,9 @@ export class FpsArenaRoom {
         breakdown: { ...victim.ledger },
       });
 
-      if (liveTdm) {
-        if (isRoundWinningKill) this.finishTdm("Elimination target reached");
+      if (live) {
+        if (isMatchWinningKill) this.finishMatch("Kill limit reached");
         else this.broadcastRoomState();
-      } else if (!isTdm && (this.phase === "LIVE_ROUND" || this.phase === "OVERTIME_ZONE")) {
-        if (isRoundWinningKill) {
-          this.endRound(victim.team === "A" ? "B" : "A", "Team Eliminated");
-        }
       }
     }
   }
@@ -1626,24 +1541,24 @@ export class FpsArenaRoom {
     thrower: RoomPlayer,
     msg: Extract<ClientToServerMessage, { type: "THROW_GRENADE" }>
   ): void {
-    const isTdm = this.mode === "TDM";
+    const usesStock = this.mode !== "WARMUP";
     if (!thrower.alive || (msg.movementEpoch !== undefined && msg.movementEpoch !== thrower.movementEpoch)) return;
     if (!isCombatPhase(this.phase)) return;
     if (!THROWABLE_ORDER.includes(msg.throwable)) return;
     const spec = THROWABLE_REGISTRY[msg.throwable];
-    if (isTdm ? thrower.throwableStock[spec.id] <= 0 : thrower.throwablesLeft <= 0) return;
+    if (usesStock ? thrower.throwableStock[spec.id] <= 0 : thrower.throwablesLeft <= 0) return;
     const length = Math.hypot(msg.dir?.x, msg.dir?.y, msg.dir?.z);
     const eye = getCameraEyePosition(thrower.state);
     const eyeDistance = Math.hypot(msg.origin?.x - eye.x, msg.origin?.y - eye.y, msg.origin?.z - eye.z);
     if (!Number.isFinite(length) || length < 0.001 || !Number.isFinite(eyeDistance) || !Number.isFinite(msg.cookElapsedSec)) return;
-    if (isTdm && (eyeDistance > 2 || !this.physWorld.hasLineOfSight(eye, msg.origin))) return;
+    if (usesStock && (eyeDistance > 2 || !this.physWorld.hasLineOfSight(eye, msg.origin))) return;
 
-    if (isTdm) thrower.throwableStock[spec.id]--;
+    if (usesStock) thrower.throwableStock[spec.id]--;
     else thrower.throwablesLeft--;
     thrower.spawnProtection = 0;
 
     const id = `gren_${this.nextThrowableId++}`;
-    const cookElapsed = !isTdm && spec.cookable ? Math.max(0, msg.cookElapsedSec) : 0;
+    const cookElapsed = !usesStock && spec.cookable ? Math.max(0, msg.cookElapsedSec) : 0;
     const fuseRemaining = Math.max(0.15, spec.fuseSec - cookElapsed);
     const velocity = {
       x: msg.dir.x / length * spec.throwSpeed,
@@ -1685,7 +1600,7 @@ export class FpsArenaRoom {
         t.fuseRemaining -= dt;
         if (t.fuseRemaining <= 0) {
           this.detonateThrowable(t);
-          if (this.mode === "TDM" && this.phase === "MATCH_END") return;
+          if (this.phase === "MATCH_END") return;
         }
       } else if (t.throwable === "smoke") {
         t.smokeTimer -= dt;
@@ -1768,11 +1683,10 @@ export class FpsArenaRoom {
     }
   }
 
-  private stepRoundStateMachine(dt: number): void {
-    const cfg = MODE_CONFIGS[this.mode];
-
+  private stepMatchClock(dt: number): void {
     if (this.phase === "WARMUP") {
       // AFK Host auto-start rule for full public rooms
+      const cfg = MODE_CONFIGS[this.mode];
       if (this.isPublic && this.players.size >= cfg.maxPlayers && this.mode !== "WARMUP") {
         this.afkFullTimerSec += dt;
         if (this.afkFullTimerSec >= 45) {
@@ -1785,166 +1699,30 @@ export class FpsArenaRoom {
       return;
     }
 
-    if (this.phase === "PRE_ROUND_FREEZE") {
+    if (this.phase === "COUNTDOWN") {
       this.phaseTimerSec -= dt;
       if (this.phaseTimerSec <= 0) {
-        this.phase = "LIVE_ROUND";
+        this.phase = "LIVE";
+        this.matchElapsedSec = 0;
         this.phaseTimerSec = this.matchRules.timeLimitSeconds;
         this.broadcastRoomState();
       }
       return;
     }
 
-    if (this.phase === "LIVE_ROUND" || this.phase === "OVERTIME_ZONE") {
-      this.roundElapsedSec += dt;
-      this.phaseTimerSec -= dt;
-      if (this.mode === "TDM") {
-        if (this.phaseTimerSec <= 1e-6) this.finishTdm("Time expired");
-        return;
-      }
-
-      // 4v4 Bomb planting & defusing progression
-      if (this.mode === "4v4") {
-        if (this.plantingPlayerId && !this.bombPlanted) {
-          const planter = this.players.get(this.plantingPlayerId);
-          if (planter && planter.alive) {
-            this.plantingProgressSec += dt;
-            if (this.plantingProgressSec >= BOMB_PLANT_SEC) {
-              this.bombPlanted = true;
-              this.bombPlanterTeam = "A";
-              this.bombTimerSec = BOMB_DETONATE_SEC;
-              this.plantingPlayerId = null;
-              this.plantingProgressSec = 0;
-              this.broadcastRoomState();
-            }
-          } else {
-            this.plantingPlayerId = null;
-            this.plantingProgressSec = 0;
-          }
-        }
-        if (this.bombPlanted) {
-          this.bombTimerSec -= dt;
-          if (this.defusingPlayerId) {
-            const defuser = this.players.get(this.defusingPlayerId);
-            if (defuser && defuser.alive) {
-              this.defusingProgressSec += dt;
-              if (this.defusingProgressSec >= BOMB_DEFUSE_SEC) {
-                this.endRound("B", "Bomb Defused");
-                return;
-              }
-            } else {
-              this.defusingPlayerId = null;
-              this.defusingProgressSec = 0;
-            }
-          }
-          if (this.bombTimerSec <= 0) {
-            this.endRound("A", "Target Detonated");
-            return;
-          }
-        }
-      }
-
-      // Unlock 45s Overtime Radar Capture Zone
-      if (!this.overtimeActive && !this.bombPlanted && this.roundElapsedSec >= OVERTIME_UNLOCK_SEC) {
-        this.overtimeActive = true;
-        this.phase = "OVERTIME_ZONE";
-        this.broadcastRoomState();
-      }
-
-      if (this.overtimeActive) {
-        this.stepOvertimeCapture(dt);
-      }
-
-      if (this.phaseTimerSec <= 0 && !this.bombPlanted) {
-        const aliveA = this.countAlive("A");
-        const aliveB = this.countAlive("B");
-        if (aliveA > aliveB) this.endRound("A", "Time Expired (More Alive)");
-        else if (aliveB > aliveA) this.endRound("B", "Time Expired (More Alive)");
-        else this.endRound("DRAW", "Round Draw");
-      }
-      return;
-    }
-
-    if (this.phase === "ROUND_END") {
-      this.phaseTimerSec -= dt;
-      if (this.phaseTimerSec <= 0) {
-        if (this.scoreA >= cfg.roundsToWin || this.scoreB >= cfg.roundsToWin) {
-          this.enterMatchEnd();
-        } else {
-          this.startNextRound();
-        }
+    if (this.phase === "LIVE") {
+      this.matchElapsedSec += dt;
+      if (this.matchRules.timeLimitSeconds > 0) {
+        this.phaseTimerSec -= dt;
+        if (this.phaseTimerSec <= 1e-6) this.finishMatch("Time expired");
       }
       return;
     }
 
     if (this.phase === "MATCH_END") {
       this.phaseTimerSec -= dt;
-      if (this.phaseTimerSec <= 0) {
-        this.finishMatchEndVotes();
-      }
+      if (this.phaseTimerSec <= 0) this.finishMatchEndVotes();
     }
-  }
-
-  private stepOvertimeCapture(dt: number): void {
-    let aInside = false;
-    let bInside = false;
-    const oz = this.map.overtimeZone;
-    for (const p of this.players.values()) {
-      if (!p.alive) continue;
-      const dist = Math.hypot(p.state.position.x - oz.center.x, p.state.position.z - oz.center.z);
-      if (dist <= oz.radius) {
-        if (p.team === "A") aInside = true;
-        else bInside = true;
-      }
-    }
-    if (aInside && bInside) {
-      this.overtimeHolder = "CONTESTED";
-    } else if (aInside) {
-      this.overtimeHolder = "A";
-      this.overtimeProgressA = Math.min(OVERTIME_CAPTURE_NEEDED_SEC, this.overtimeProgressA + dt);
-      if (this.overtimeProgressA >= OVERTIME_CAPTURE_NEEDED_SEC) {
-        this.endRound("A", "Overtime Zone Captured");
-      }
-    } else if (bInside) {
-      this.overtimeHolder = "B";
-      this.overtimeProgressB = Math.min(OVERTIME_CAPTURE_NEEDED_SEC, this.overtimeProgressB + dt);
-      if (this.overtimeProgressB >= OVERTIME_CAPTURE_NEEDED_SEC) {
-        this.endRound("B", "Overtime Zone Captured");
-      }
-    } else {
-      this.overtimeHolder = null;
-    }
-  }
-
-  private countAlive(team: TeamId): number {
-    let c = 0;
-    for (const p of this.players.values()) {
-      if (p.team === team && p.alive) c++;
-    }
-    return c;
-  }
-
-  private isTeamEliminated(team: TeamId): boolean {
-    return this.countAlive(team) === 0;
-  }
-
-  private endRound(winnerTeam: TeamId | "DRAW", reason: string): void {
-    if (this.phase === "ROUND_END" || this.phase === "MATCH_END") return;
-    if (winnerTeam === "A") this.scoreA++;
-    else if (winnerTeam === "B") this.scoreB++;
-
-    const cfg = MODE_CONFIGS[this.mode];
-    const isMatchOver = this.scoreA >= cfg.roundsToWin || this.scoreB >= cfg.roundsToWin;
-    this.phase = "ROUND_END";
-    this.phaseTimerSec = ROUND_END_DELAY_SEC;
-
-    this.broadcastJson({
-      type: "ROUND_BANNER",
-      winnerTeam,
-      reason,
-      isMatchOver,
-    });
-    this.broadcastRoomState();
   }
 
   private enterMatchEnd(winner?: TeamId | "DRAW"): void {
@@ -1972,9 +1750,10 @@ export class FpsArenaRoom {
     this.broadcastJson({ type: "MATCH_RESULTS", winnerTeam, mvpId: mvp?.id, players });
   }
 
-  private finishTdm(reason: string, winner?: TeamId): void {
+  private finishMatch(reason: string, winner?: TeamId): void {
+    if (this.phase === "MATCH_END") return;
     const winnerTeam = winner ?? (this.scoreA === this.scoreB ? "DRAW" : this.scoreA > this.scoreB ? "A" : "B");
-    this.broadcastJson({ type: "ROUND_BANNER", winnerTeam, reason, isMatchOver: true });
+    this.broadcastJson({ type: "MATCH_ENDED", winnerTeam, reason });
     this.enterMatchEnd(winnerTeam);
   }
 
@@ -1984,7 +1763,7 @@ export class FpsArenaRoom {
       else {
         this.phase = "WARMUP";
         this.phaseTimerSec = 0;
-        this.scoreA = this.scoreB = this.roundNumber = 0;
+        this.scoreA = this.scoreB = 0;
         this.resetPlayersToSpawns();
         this.broadcastRoomState();
       }
@@ -2057,7 +1836,7 @@ export class FpsArenaRoom {
       hp: player.hp,
       armor: player.armor,
       respawnSeconds: player.respawnTimer,
-      ...(this.mode === "TDM" ? {
+      ...(this.mode !== "WARMUP" ? {
         throwableStock: { ...player.throwableStock },
         spawnProtectionSeconds: player.spawnProtection,
       } : {}),
@@ -2098,22 +1877,14 @@ export class FpsArenaRoom {
       mode: this.mode,
       mapId: this.mapId,
       phase: this.phase,
-      roundNumber: this.roundNumber,
-      roundTimeRemainingSec: Math.max(0, Math.ceil(this.phaseTimerSec)),
+      timeRemainingSec: this.timeRemainingSec(),
+      elapsedSec: Math.floor(this.matchElapsedSec),
       scoreA: this.scoreA,
       scoreB: this.scoreB,
-      overtimeActive: this.overtimeActive,
-      overtimeHolder: this.overtimeHolder,
-      overtimeProgressA: this.overtimeProgressA,
-      overtimeProgressB: this.overtimeProgressB,
-      bombPlanted: this.bombPlanted,
-      bombTimerSec: Math.max(0, Number(this.bombTimerSec.toFixed(1))),
-      bombPlanterTeam: this.bombPlanterTeam,
       botFill: this.botFill,
       botDifficulty: this.botDifficulty,
       matchRules: this.matchRules,
       pickups: this.pickups.snapshot(),
-      gunfightLoadout: this.gunfightLoadout,
       players,
       mapVoteOptions: this.phase === "MATCH_END" ? this.mapVoteOptions : undefined,
       mapVotes: this.phase === "MATCH_END" ? mapVotesRecord : undefined,

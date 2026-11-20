@@ -369,6 +369,10 @@ export class RemoteSoldier {
     return this.iffBeacon.getAbsolutePosition();
   }
 
+  /** Gait of the most recent snapshot, read by the audio code when a footfall lands. */
+  lastStepSpeed = 0;
+  lastStepCrouching = false;
+
   applySnapshot(state: InterpolatedRemoteState, dt: number): boolean {
     const wasAlive = this.wasAlive;
     if (this.wasAlive && !state.alive) {
@@ -449,6 +453,8 @@ export class RemoteSoldier {
       leg.rotation.x = step * (forwardClip ? Math.min(speed * 0.12, 0.7) : this.gaitForward * 0.55);
       leg.rotation.z = step * this.gaitSide * 0.38;
     });
+    this.lastStepSpeed = speed;
+    this.lastStepCrouching = state.crouching;
     return onFoot && Math.floor(this.stride) !== Math.floor(lastStride);
   }
 

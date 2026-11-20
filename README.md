@@ -2,7 +2,7 @@
 
 A browser game hub with two multiplayer games:
 
-- **StrikeCore**, a tactical shooter (Aim Duel, Gunfight, Tactical Wipeout, Team Deathmatch, Warm-Up range)
+- **StrikeCore**, a tactical shooter (1v1 Duel, 2v2 Team Duel, 4v4 Team Deathmatch, Warm-Up range)
 - **ApexDrive**, a street and track racer
 
 The client is Babylon.js with Rapier physics. The server is an authoritative Node WebSocket server. Both share one `@game/shared` package for the protocol and physics rules.

@@ -44,6 +44,6 @@ The TDM loadout can specify a pair of distinct throwable IDs through `tdmThrowab
 
 ## Maps and spawn cover
 
-The map registry defines each arena's floor, lighting, themed block geometry, team spawn locations, practice targets, bot waypoints, bomb site, and capture zone. The renderer and Rapier derive their map geometry from the same definitions. Material tags and geometry control surface effects and thin-cover penetration. [MapRegistry.ts](../packages/shared/src/registries/MapRegistry.ts)
+The map registry defines each arena's floor, lighting, themed block geometry, team spawn locations, practice targets, and bot waypoints. The renderer and Rapier derive their map geometry from the same definitions. Material tags and geometry control surface effects and thin-cover penetration. [MapRegistry.ts](../packages/shared/src/registries/MapRegistry.ts)
 
 When changing team spawns, keep routes out of spawn usable and check sightlines for both teams. TDM ranks each team's spawn candidates by occupancy, enemy visibility, and distance. Check practice targets for clear approaches and make sure crouch-height cover still works with the shared character controller.

@@ -55,7 +55,7 @@ export class RoomManager {
     const rules = normalizeMatchRules(opts.mode, opts.matchRules);
     for (const room of this.rooms.values()) {
       if (room.isPublic && room.mode === opts.mode && room.mapId === opts.mapId &&
-        room.matchRules.ranked === rules.ranked && room.matchRules.timeLimitSeconds === rules.timeLimitSeconds &&
+        room.matchRules.ranked === rules.ranked && room.matchRules.timeLimitSeconds === rules.timeLimitSeconds && room.matchRules.scoreLimit === rules.scoreLimit &&
         room.matchRules.friendlyFire === rules.friendlyFire &&
         (rules.ranked || (room.botDifficulty === (opts.botDifficulty ?? "NORMAL") && room.botFill === opts.botFill)) && room.canJoin()) {
         return room;

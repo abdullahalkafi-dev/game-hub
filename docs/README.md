@@ -1,6 +1,6 @@
 # StrikeCore documentation
 
-The game hub includes StrikeCore, a browser-based multiplayer tactical shooter, and ApexDrive Street Racer. Play Aim Duel, Gunfight, Tactical Wipeout, Team Deathmatch, or the Warm-Up Aim Range across Cargo Docks, Desert Outpost, and Neon Rooftop.
+The game hub includes StrikeCore, a browser-based multiplayer tactical shooter, and ApexDrive Street Racer. Play 1v1 Duel, 2v2 Team Duel, 4v4 Team Deathmatch, or the Warm-Up Aim Range across Cargo Docks, Desert Outpost, and Neon Rooftop.
 
 ## Start here
 

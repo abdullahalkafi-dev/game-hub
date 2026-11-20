@@ -50,6 +50,7 @@ import {
   destroyCharacterPhysics,
   distPointToRay,
   getCameraEyePosition,
+  COUNTDOWN_SEC,
   isCombatPhase,
   lerp,
   restoreCharacterPhysics,
@@ -124,7 +125,6 @@ export interface HudLiveSnapshot {
   alive: boolean;
   spectatingName: string | null;
   activeSlot: 0 | 1;
-  canPlantOrDefuse: "PLANT" | "DEFUSE" | null;
   pointerLocked: boolean;
   flashAlpha: number;
   damageVignetteAlpha: number;
@@ -172,11 +172,13 @@ export interface ShooterSceneCallbacks {
   onDamageTaken: (attackerRelAngleRad: number) => void;
   onKillFeed: (msg: Extract<ServerToClientMessage, { type: "KILL_FEED" }>) => void;
   onDamageBreakdown: (bd: DamageBreakdownPayload) => void;
-  onRoundBanner: (msg: Extract<ServerToClientMessage, { type: "ROUND_BANNER" }>) => void;
+  onMatchEnded: (msg: Extract<ServerToClientMessage, { type: "MATCH_ENDED" }>) => void;
   onDangerPing: (msg: Extract<ServerToClientMessage, { type: "DANGER_PING" }>) => void;
   onPauseChanged: (paused: boolean) => void;
   onScoreboardChanged: (visible: boolean) => void;
   onToggleLoadout: () => void;
+  /** +1 / -1 nudges the master volume; 0 toggles mute. */
+  onVolumeKey: (direction: -1 | 0 | 1) => void;
   onPointerCaptureError: (message: string) => void;
   onArenaEvent: (event: ArenaHudEvent) => void;
 }
@@ -213,7 +215,7 @@ interface ActivePingMarker {
  * - Builds Cargo Docks, Desert Outpost, or Neon Rooftop from MapBlueprint with Poly Haven PBR & glTF props
  * - Client-predicted 60Hz Rapier movement (Lean, Slide, Auto-Vault)
  * - ViewModel recoil, ADS scope zoom + Hold-Breath, ParticleSystem VFX, decals & live grenade arc
- * - Destructible glass & explosive fuel barrels, 45s Overtime Capture Zone, Warm-Up Steel Targets
+ * - Destructible glass & explosive fuel barrels, Warm-Up Steel Targets
  */
 export class ShooterScene {
   public readonly scene: Scene;
@@ -223,6 +225,10 @@ export class ShooterScene {
   private playerState: FpsPlayerState;
   private playerPhysics: CharacterPhysicsHandle;
   private prevPosition: Vec3 = { x: 0, y: 0, z: 0 };
+  private audioWasAlive = true;
+  private nextHeartbeatAtMs = 0;
+  private wasGroundedAudio = true;
+  private fallSpeedAudio = 0;
   private prevEyeHeight = 1.62;
 
   private readonly viewModel: ViewModelWeapon;
@@ -254,9 +260,6 @@ export class ShooterScene {
   private readonly enemyBlips: { x: number; z: number; ttl: number }[] = [];
   private readonly warmupTargetMeshes: { mesh: Mesh; mat: StandardMaterial; flashTimer: number }[] = [];
 
-  private overtimeRingMesh: Mesh | null = null;
-  private overtimeRingMat: StandardMaterial | null = null;
-  private bombBeaconMesh: Mesh | null = null;
 
   private room: RoomStateBroadcast;
   private localPlayerId: string;
@@ -318,7 +321,6 @@ export class ShooterScene {
   private paused = false;
   private loadoutOpen = false;
   private appliedQuality: GuestProfile["settings"]["graphicsQuality"] | null = null;
-  private lastRoundNumber = -1;
   private currentPrimaryKey = "";
   private currentSecondaryKey = "";
   private readonly effectiveWeapons: [EffectiveWeaponStats | null, EffectiveWeaponStats | null] = [null, null];
@@ -388,6 +390,9 @@ export class ShooterScene {
     this.pipeline.imageProcessing.contrast = 1.2;
 
     this.physWorld = new PhysicsWorld(this.map);
+    // Walls between you and a sound muffle it, so enemies behind cover sound distant and dull.
+    this.audio.setOcclusionTest((from, to) =>
+      !this.physWorld.hasLineOfSight(from, { x: to.x, y: to.y < 0.5 ? to.y + 1.0 : to.y, z: to.z }));
     const localSummary = this.getLocalPlayerSummary();
     const spawn =
       localSummary?.team === "B" ? this.map.spawnsB[0] : this.map.spawnsA[0];
@@ -450,7 +455,6 @@ export class ShooterScene {
   }
 
   private clearCombatInputs(preserveMovement = false): void {
-    if (this.keys.has("KeyF")) this.tryBombInteract(false);
     if (this.keys.has("Tab")) this.callbacks.onScoreboardChanged(false);
     if (preserveMovement) {
       for (const key of this.keys) {
@@ -504,9 +508,9 @@ export class ShooterScene {
   }
 
   forceEquipLocalLoadout(): void {
-    if (this.room.mode === "TDM") return;
+    if (this.room.mode !== "WARMUP") return;
     const summary = this.getLocalPlayerSummary();
-    if (summary && this.room.mode !== "2v2") {
+    if (summary) {
       summary.loadout = structuredClone(this.profile.loadout);
     }
     this.reloadTimer = 0;
@@ -569,10 +573,7 @@ export class ShooterScene {
 
   private getActiveWeaponConfig(): PlayerWeaponConfig {
     const summary = this.getLocalPlayerSummary();
-    const kit =
-      this.room.mode === "2v2" && this.room.gunfightLoadout
-        ? this.room.gunfightLoadout
-        : summary?.loadout ?? this.profile.loadout;
+    const kit = summary?.loadout ?? this.profile.loadout;
     return this.activeSlot === 0 ? kit.primary : kit.secondary;
   }
 
@@ -587,10 +588,7 @@ export class ShooterScene {
 
   private syncEquippedWeapons(forceResetAmmo = false): void {
     const summary = this.getLocalPlayerSummary();
-    const kit =
-      this.room.mode === "2v2" && this.room.gunfightLoadout
-        ? this.room.gunfightLoadout
-        : summary?.loadout ?? this.profile.loadout;
+    const kit = summary?.loadout ?? this.profile.loadout;
 
     const pKey = JSON.stringify(kit.primary);
     const sKey = JSON.stringify(kit.secondary);
@@ -658,11 +656,6 @@ export class ShooterScene {
     }
     this.warmupTargetMeshes.length = 0;
 
-    this.overtimeRingMesh?.dispose();
-    this.overtimeRingMat?.dispose();
-    this.bombBeaconMesh?.material?.dispose(false, false);
-    this.bombBeaconMesh?.dispose();
-    this.bombBeaconMesh = null;
 
     this.skyMesh?.material?.dispose(false, false);
     this.skyMesh?.dispose();
@@ -846,42 +839,6 @@ export class ShooterScene {
     }
 
     this.buildEnvironmentalLandmarks();
-
-    // 45s Overtime Radar Capture Zone Glowing Ring
-    this.overtimeRingMesh = MeshBuilder.CreateTorus(
-      "overtime_ring",
-      { diameter: this.map.overtimeZone.radius * 2, thickness: 0.16, tessellation: 42 },
-      this.scene
-    );
-    this.overtimeRingMesh.position.set(
-      this.map.overtimeZone.center.x,
-      0.08,
-      this.map.overtimeZone.center.z
-    );
-    this.overtimeRingMat = new StandardMaterial("overtime_ring_mat", this.scene);
-    this.overtimeRingMat.emissiveColor = Color3.FromHexString("#38bdf8");
-    this.overtimeRingMat.disableLighting = true;
-    this.overtimeRingMat.alpha = 0.72;
-    this.overtimeRingMesh.material = this.overtimeRingMat;
-
-    // 4v4 Bomb Site Beacon
-    if (this.room.mode === "4v4") {
-      this.bombBeaconMesh = MeshBuilder.CreateTorus(
-        "bomb_beacon",
-        { diameter: this.map.bombSite.radius * 2, thickness: 0.1, tessellation: 32 },
-        this.scene
-      );
-      this.bombBeaconMesh.position.set(
-        this.map.bombSite.center.x,
-        0.06,
-        this.map.bombSite.center.z
-      );
-      const bm = new StandardMaterial("bomb_beacon_mat", this.scene);
-      bm.emissiveColor = Color3.FromHexString("#f59e0b");
-      bm.disableLighting = true;
-      bm.alpha = 0.7;
-      this.bombBeaconMesh.material = bm;
-    }
 
     // Tactical Steel Silhouette Practice Targets
     for (let i = 0; i < this.map.warmupTargets.length; i++) {
@@ -1142,6 +1099,21 @@ export class ShooterScene {
         this.setPaused(!this.paused);
         return;
       }
+      if (e.code === "Minus" || e.code === "NumpadSubtract") {
+        e.preventDefault();
+        this.callbacks.onVolumeKey(-1);
+        return;
+      }
+      if (e.code === "Equal" || e.code === "NumpadAdd") {
+        e.preventDefault();
+        this.callbacks.onVolumeKey(1);
+        return;
+      }
+      if (e.code === "F8" && !e.repeat) {
+        e.preventDefault();
+        this.callbacks.onVolumeKey(0);
+        return;
+      }
       if (this.paused || e.repeat) return;
       if (e.code === "KeyL") {
         e.preventDefault();
@@ -1189,9 +1161,6 @@ export class ShooterScene {
       if (e.code === "KeyZ") {
         this.sendDangerPing();
       }
-      if (e.code === "KeyF") {
-        this.tryBombInteract(true);
-      }
       if (e.code === combatKey(bindings, "reload") && !this.cookingGrenade) {
         this.startReload();
       }
@@ -1205,9 +1174,6 @@ export class ShooterScene {
       }
       if (e.code === combatKey(this.profile.settings.combatBindings, "throwGrenade") && this.cookingGrenade) {
         this.releaseThrowGrenade();
-      }
-      if (e.code === "KeyF") {
-        this.tryBombInteract(false);
       }
     };
 
@@ -1292,6 +1258,7 @@ export class ShooterScene {
     this.viewModel.cancelInspect();
     this.cancelGrenadePreview();
     if (this.activeSlot === slot) return;
+    this.audio.playWeaponSwitch();
     this.activeSlot = slot;
     this.reloadTimer = 0;
     this.reloadRequested = false;
@@ -1339,12 +1306,12 @@ export class ShooterScene {
   }
 
   private grenadesAvailable(throwable = this.activeThrowable): number {
-    return this.room.mode === "TDM" ? this.throwableStock[throwable] : this.throwablesLeft;
+    return this.room.mode !== "WARMUP" ? this.throwableStock[throwable] : this.throwablesLeft;
   }
 
   private canThrowGrenade(): boolean {
     return this.movementEpoch !== null && this.net.latestLocalState?.alive === true &&
-      ["WARMUP", "LIVE_ROUND", "OVERTIME_ZONE"].includes(this.room.phase) && this.grenadesAvailable() > 0;
+      isCombatPhase(this.room.phase) && this.grenadesAvailable() > 0;
   }
 
   private cancelGrenadePreview(): void {
@@ -1361,7 +1328,7 @@ export class ShooterScene {
     const isDry = this.ammoInMag[this.activeSlot] === 0;
     this.reloadTimer = isDry ? stats.reloadEmptySec : stats.reloadTacticalSec;
     this.reloadRequested = true;
-    this.audio.playReloadClick(isDry);
+    this.audio.playReloadClick(isDry, this.reloadTimer);
   }
 
   private quickMelee(): void {
@@ -1372,6 +1339,7 @@ export class ShooterScene {
     this.mouseDownLeft = this.mouseDownRight = this.justFiredTrigger = false;
     this.burstRemaining = 0;
     this.viewModel.swingKnife();
+    this.audio.playKnifeSwing();
     this.net.send({ type: "MELEE", movementEpoch: this.movementEpoch });
   }
 
@@ -1379,7 +1347,7 @@ export class ShooterScene {
     const cookElapsedSec = this.cookElapsedSec;
     this.cancelGrenadePreview();
     if (!this.canThrowGrenade() || this.movementEpoch === null) return;
-    if (this.room.mode !== "TDM") this.throwablesLeft--;
+    if (this.room.mode === "WARMUP") this.throwablesLeft--;
     this.viewModel.notifyThrow();
 
     const eye = getCameraEyePosition(this.playerState);
@@ -1435,28 +1403,13 @@ export class ShooterScene {
     this.net.send({ type: "DANGER_PING", position: pos });
   }
 
-  private tryBombInteract(active: boolean): void {
-    if (this.room.mode !== "4v4") return;
-    const local = this.getLocalPlayerSummary();
-    if (!local || !local.alive) return;
-    if (!active) {
-      this.net.send({ type: "BOMB_ACTION", action: "CANCEL" });
-      return;
-    }
-    this.net.send({
-      type: "BOMB_ACTION",
-      action: local.team === "A" ? "PLANT" : "DEFUSE",
-    });
-  }
-
   public handleServerMessage(msg: ServerToClientMessage): void {
     switch (msg.type) {
       case "ROOM_STATE": {
         const oldMap = this.currentMapId;
         const wasWarmup = this.room.phase === "WARMUP";
         const nextRoom = msg.room;
-        const roundChanged = nextRoom.roundNumber !== this.lastRoundNumber ||
-          (this.room.phase === "MATCH_END" && nextRoom.phase === "PRE_ROUND_FREEZE");
+        const matchRestarted = this.room.phase !== "COUNTDOWN" && nextRoom.phase === "COUNTDOWN";
         this.room = nextRoom;
         this.pickupView.sync(nextRoom.pickups ?? []);
 
@@ -1470,9 +1423,9 @@ export class ShooterScene {
           for (const post of this.warmupPostMeshes) post.setEnabled(showPracticeTargets);
         }
 
-        if (roundChanged) {
+        if (matchRestarted) {
+          this.audio.playCountdown(COUNTDOWN_SEC);
           this.deathCamera.stop();
-          this.lastRoundNumber = nextRoom.roundNumber;
           this.throwablesLeft = 2;
           this.reloadTimer = 0;
           this.recoilOffsetPitch = 0;
@@ -1556,6 +1509,7 @@ export class ShooterScene {
         const dz = msg.attackerPosition.z - this.playerState.position.z;
         const worldAngle = Math.atan2(dx, dz);
         const relAngle = worldAngle - this.playerState.yaw;
+        this.audio.playHurt();
         this.callbacks.onDamageTaken(relAngle);
         break;
       }
@@ -1573,11 +1527,16 @@ export class ShooterScene {
       case "PICKUP_COLLECTED":
       case "MATCH_RESULTS":
         if (msg.type === "MATCH_RESULTS") this.deathCamera.stop();
+        if (msg.type === "COMBAT_STREAK" && msg.multi >= 2) this.audio.playMultiKill();
+        if (msg.type === "PICKUP_COLLECTED") this.audio.playPickup(msg.kind);
         this.callbacks.onArenaEvent(msg);
         break;
 
       case "KILL_FEED": {
-        if (msg.isRoundWinningKill) {
+        if (msg.weaponId === "knife" && (msg.killerName === this.profile.callsign || msg.victimName === this.profile.callsign)) {
+          this.audio.playKnifeHit();
+        }
+        if (msg.isMatchWinningKill) {
           this.slowMoTimer = 1.5;
           this.audio.playSlowMoSweep(1.5);
         }
@@ -1618,6 +1577,7 @@ export class ShooterScene {
       }
 
       case "THROWABLE_SPAWNED": {
+        this.audio.playGrenadeThrow(msg.position);
         const spec = THROWABLE_REGISTRY[msg.throwable];
         const model = createGrenadeModel(this.scene, msg.throwable, `gren_${msg.id}`);
         const m = model.root;
@@ -1665,6 +1625,8 @@ export class ShooterScene {
           this.disposeGrenadeVisual(this.grenadeVisuals[idx]);
           this.grenadeVisuals.splice(idx, 1);
         }
+        if (msg.throwable === "smoke") this.audio.playSmokePop(msg.position);
+        else if (msg.throwable === "flashbang") this.audio.playFlashbangBang(msg.position);
         if (msg.throwable === "frag") {
           this.vfx.spawnExplosionVfx(msg.position, 0.9, msg.position.y - 0.12);
           this.audio.playExplosion(msg.position);
@@ -1728,6 +1690,7 @@ export class ShooterScene {
       }
 
       case "DANGER_PING": {
+        this.audio.playPing(msg.playerId === this.localPlayerId ? undefined : msg.position);
         if (msg.enemySpotted) this.audio.playEnemySpotted();
         if (![msg.position.x, msg.position.y, msg.position.z].every(Number.isFinite)) break;
         const previous = this.pingMarkers.findIndex((marker) => marker.playerId === msg.playerId);
@@ -1760,8 +1723,10 @@ export class ShooterScene {
         break;
       }
 
-      case "ROUND_BANNER": {
-        this.callbacks.onRoundBanner(msg);
+      case "MATCH_ENDED": {
+        const localTeam = this.getLocalPlayerSummary()?.team;
+        this.audio.playMatchEnd(msg.winnerTeam === "DRAW" || !localTeam ? null : msg.winnerTeam === localTeam);
+        this.callbacks.onMatchEnded(msg);
         break;
       }
     }
@@ -1835,7 +1800,7 @@ export class ShooterScene {
     for (const p of this.room.players) {
       if (p.id === this.localPlayerId) continue;
       activeIds.add(p.id);
-      const kit = this.room.mode === "2v2" && this.room.gunfightLoadout ? this.room.gunfightLoadout : p.loadout;
+      const kit = p.loadout;
       const existing = this.remoteSoldiers.get(p.id);
       if (!existing) {
         this.remoteSoldiers.set(
@@ -1981,8 +1946,8 @@ export class ShooterScene {
     if (this.movementEpoch === null) return;
     const local = this.getLocalPlayerSummary();
     const isAlive = this.net.latestLocalState?.alive ?? local?.alive ?? true;
-    const canMove = this.room.phase !== "PRE_ROUND_FREEZE" && this.room.phase !== "MATCH_END" && isAlive;
-    const canShoot = isAlive && ["WARMUP", "LIVE_ROUND", "OVERTIME_ZONE"].includes(this.room.phase);
+    const canMove = this.room.phase !== "COUNTDOWN" && this.room.phase !== "MATCH_END" && isAlive;
+    const canShoot = isAlive && isCombatPhase(this.room.phase);
 
     // Save previous transform for render interpolation
     this.prevPosition.x = this.playerState.position.x;
@@ -2041,7 +2006,7 @@ export class ShooterScene {
     }
 
     // Grenade cooking
-    if (this.cookingGrenade && this.room.mode !== "TDM") {
+    if (this.cookingGrenade && this.room.mode === "WARMUP") {
       this.cookElapsedSec += dt;
       const spec = THROWABLE_REGISTRY[this.activeThrowable];
       if (spec.cookable && this.cookElapsedSec >= spec.fuseSec - 0.1) {
@@ -2078,11 +2043,17 @@ export class ShooterScene {
 
     this.updateHoldBreath(stats, dt);
 
+    // Landing thud after a real fall (not stepping off a curb)
+    if (canMove && !this.wasGroundedAudio && this.playerState.grounded && this.fallSpeedAudio < -5) this.audio.playLand();
+    this.wasGroundedAudio = this.playerState.grounded;
+    this.fallSpeedAudio = this.playerState.velocity.y;
+
     // Footstep cadence audio
     const distance = Math.hypot(this.playerState.position.x - this.prevPosition.x, this.playerState.position.z - this.prevPosition.z);
     if (canMove && this.playerState.grounded && !this.playerState.sliding && !this.playerState.vaulting && distance > 0.005) {
       const phase = advanceStepPhase(this.stepPhase, distance, distance / dt, this.playerState.crouching);
-      if (Math.floor(phase) !== Math.floor(this.stepPhase)) this.audio.playFootstep(this.footstepSurface(this.playerState.position));
+      if (Math.floor(phase) !== Math.floor(this.stepPhase)) this.audio.playFootstep(this.footstepSurface(this.playerState.position), undefined,
+        this.playerState.crouching ? "crouch" : distance / dt > 5.8 ? "sprint" : "walk");
       this.stepPhase = phase;
     }
   }
@@ -2213,6 +2184,14 @@ export class ShooterScene {
     const local = this.getLocalPlayerSummary();
     const authoritative = this.net.latestLocalState;
     const isAlive = authoritative?.alive ?? local?.alive ?? true;
+    if (this.audioWasAlive && !isAlive) this.audio.playDeath();
+    else if (!this.audioWasAlive && isAlive && this.room.phase === "LIVE") this.audio.playRespawn();
+    this.audioWasAlive = isAlive;
+    const lowHp = authoritative?.hp ?? local?.hp ?? 100;
+    if (isAlive && lowHp > 0 && lowHp <= 30 && isCombatPhase(this.room.phase) && performance.now() >= this.nextHeartbeatAtMs) {
+      this.audio.playHeartbeat();
+      this.nextHeartbeatAtMs = performance.now() + (lowHp <= 15 ? 750 : 1100);
+    }
     const stats = this.getActiveWeaponStats();
     const scopeLevel = this.getScopeLevel(stats);
 
@@ -2335,8 +2314,9 @@ export class ShooterScene {
       }
       const snap = this.net.getInterpolatedPlayerState(soldier.playerIndex);
       if (snap) {
-        if (soldier.applySnapshot(snap, dt) && Vector3.DistanceSquared(soldier.root.position, this.camera.position) < 30 ** 2) {
-          this.audio.playFootstep(this.footstepSurface(soldier.root.position), soldier.root.position);
+        if (soldier.applySnapshot(snap, dt) && Vector3.DistanceSquared(soldier.root.position, this.camera.position) < 45 ** 2) {
+          this.audio.playFootstep(this.footstepSurface(soldier.root.position), soldier.root.position,
+            soldier.lastStepCrouching ? "crouch" : soldier.lastStepSpeed > 5.8 ? "sprint" : "walk");
         }
       }
     }
@@ -2347,21 +2327,6 @@ export class ShooterScene {
     const camFwd = this.camera.getDirection(Vector3.Forward());
     const camUp = this.camera.getDirection(Vector3.Up());
     this.audio.updateListener(this.camera.position, camFwd, camUp);
-
-    // Update Overtime Ring color
-    if (this.overtimeRingMat) {
-      if (this.room.overtimeActive) {
-        this.overtimeRingMat.emissiveColor = Color3.FromHexString(
-          this.room.overtimeHolder === "A"
-            ? "#38bdf8"
-            : this.room.overtimeHolder === "B"
-              ? "#ef4444"
-              : "#f59e0b"
-        );
-      } else {
-        this.overtimeRingMat.emissiveColor = Color3.FromHexString("#334155");
-      }
-    }
 
     // Update Grenades, Volumetric Smokes, Pings, Blips & Warm-up Targets
     for (let i = this.grenadeVisuals.length - 1; i >= 0; i--) {
@@ -2482,18 +2447,6 @@ export class ShooterScene {
     const modes = stats.blueprint.stats.fireModes;
     const currentFireMode = modes[this.fireModeIndex % modes.length];
 
-    let canPlantOrDefuse: "PLANT" | "DEFUSE" | null = null;
-    if (this.room.mode === "4v4" && isAlive && local) {
-      const d = Math.hypot(
-        this.playerState.position.x - this.map.bombSite.center.x,
-        this.playerState.position.z - this.map.bombSite.center.z
-      );
-      if (d <= this.map.bombSite.radius + 1.0) {
-        if (local.team === "A" && !this.room.bombPlanted) canPlantOrDefuse = "PLANT";
-        else if (local.team === "B" && this.room.bombPlanted) canPlantOrDefuse = "DEFUSE";
-      }
-    }
-
     const cookMax = THROWABLE_REGISTRY[this.activeThrowable].fuseSec;
     this.callbacks.onHudUpdate({
       replayName: playingReplay ? this.deathCamera.name : null,
@@ -2515,7 +2468,7 @@ export class ShooterScene {
       sliding: this.playerState.sliding,
       throwable: this.activeThrowable,
       throwablesLeft: this.grenadesAvailable(),
-      throwableStock: this.room.mode === "TDM" ? this.throwableStock : null,
+      throwableStock: this.room.mode !== "WARMUP" ? this.throwableStock : null,
       grenadePreviewing: this.cookingGrenade,
       cookingFusePct: this.cookingGrenade ? Math.min(100, Math.round((this.cookElapsedSec / cookMax) * 100)) : 0,
       healingDelaySeconds: isAlive && authoritative && authoritative.hp < 100
@@ -2525,12 +2478,10 @@ export class ShooterScene {
       pingMs: this.net.currentPingMs,
       snapshotAgeMs: this.net.snapshotAgeMs,
       movementCorrections: this.movementCorrections,
-      respawnSeconds: !isAlive && authoritative && (this.room.phase === "WARMUP" ||
-        (this.room.mode === "TDM" && this.room.phase === "LIVE_ROUND")) ? authoritative.respawnSeconds : null,
+      respawnSeconds: !isAlive && authoritative && (this.room.phase === "WARMUP" || this.room.phase === "LIVE") ? authoritative.respawnSeconds : null,
       alive: isAlive,
       spectatingName,
       activeSlot: this.activeSlot,
-      canPlantOrDefuse,
       pointerLocked: document.pointerLockElement === this.app.canvas,
       flashAlpha: this.flashAlpha,
       damageVignetteAlpha: this.damageVignetteAlpha,
@@ -2545,6 +2496,7 @@ export class ShooterScene {
   }
 
   dispose(): void {
+    this.audio.setOcclusionTest(null);
     this.replayVictim?.dispose();
     this.pickupView.dispose();
     this.loop.stop();

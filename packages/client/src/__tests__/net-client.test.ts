@@ -43,9 +43,8 @@ const welcome: Extract<ServerToClientMessage, { type: "WELCOME" }> = {
   reconnected: false,
   room: {
     code: "TEST", isPublic: false, mode: "1v1", mapId: "cargo_docks", phase: "WARMUP",
-    roundNumber: 0, roundTimeRemainingSec: 0, scoreA: 0, scoreB: 0,
-    overtimeActive: false, overtimeHolder: null, overtimeProgressA: 0, overtimeProgressB: 0,
-    bombPlanted: false, bombTimerSec: 0, bombPlanterTeam: null, botFill: false, players: [],
+    timeRemainingSec: 0, elapsedSec: 0, scoreA: 0, scoreB: 0,
+    botFill: false, players: [],
   },
 };
 

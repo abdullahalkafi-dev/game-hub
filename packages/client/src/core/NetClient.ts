@@ -25,6 +25,13 @@ export interface PublicRoomSummary {
   humanCount: number;
   maxPlayers: number;
   ranked?: boolean;
+  /** 0 = unlimited. */
+  timeLimitSeconds?: number;
+  /** 0 = no kill limit. */
+  scoreLimit?: number;
+  timeRemainingSec?: number;
+  scoreA?: number;
+  scoreB?: number;
 }
 
 interface TimedBinarySnapshot {

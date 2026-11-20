@@ -128,6 +128,28 @@ async function bootstrap(): Promise<void> {
   const raceAudio = new EngineAudioSynth();
   raceAudio.setMasterVolume(profile.settings.masterVolume);
 
+  let audioMuted = false;
+  const applyMasterVolume = (volume: number, announce: boolean): void => {
+    profile.settings.masterVolume = Math.min(1, Math.max(0, Math.round(volume * 100) / 100));
+    if (profile.settings.masterVolume > 0) audioMuted = false;
+    audio.setMuted(audioMuted);
+    audio.setConfig(profile.settings);
+    raceAudio.setMasterVolume(audioMuted ? 0 : profile.settings.masterVolume);
+    saveGuestProfile(profile);
+    hud?.syncVolumeControls(profile.settings.masterVolume);
+    if (announce) hud?.showVolumeToast(profile.settings.masterVolume, audioMuted);
+  };
+  const onVolumeKey = (direction: -1 | 0 | 1): void => {
+    if (direction === 0) {
+      audioMuted = !audioMuted;
+      audio.setMuted(audioMuted);
+      raceAudio.setMasterVolume(audioMuted ? 0 : profile.settings.masterVolume);
+      hud?.showVolumeToast(profile.settings.masterVolume, audioMuted);
+      return;
+    }
+    applyMasterVolume(profile.settings.masterVolume + direction * 0.05, true);
+  };
+
   const net = new NetClient();
   const raceNet = new RaceNetClient();
 
@@ -149,7 +171,8 @@ async function bootstrap(): Promise<void> {
     profile,
     () => {
       audio.setConfig(profile.settings);
-      raceAudio.setMasterVolume(profile.settings.masterVolume);
+      raceAudio.setMasterVolume(audioMuted ? 0 : profile.settings.masterVolume);
+      hud?.syncVolumeControls(profile.settings.masterVolume);
       activeShooter?.applyUpdatedSettings();
       activeRacer?.applyUpdatedSettings();
     },
@@ -397,6 +420,7 @@ async function bootstrap(): Promise<void> {
             difficulty: latestRoom.botDifficulty ?? "NORMAL",
             canChange: latestRoom.players.some((player) => player.id === net.yourPlayerId && player.isHost),
           }),
+        onMasterVolumeChange: (volume) => applyMasterVolume(volume, false),
         onUpdateLoadout: (loadout) => {
           net.send({ type: "SET_LOADOUT", loadout });
           activeShooter?.forceEquipLocalLoadout();
@@ -427,7 +451,7 @@ async function bootstrap(): Promise<void> {
           hud?.showDamageDirection(relAngleRad);
         },
         onKillFeed: (msg) => {
-          if (msg.killerName === profile.callsign && (latestRoom.mode !== "TDM" || msg.killerTeam !== msg.victimTeam)) {
+          if (msg.killerName === profile.callsign && msg.killerTeam !== msg.victimTeam) {
             profile.stats.kills++;
             if (msg.isHeadshot) profile.stats.headshots++;
             saveGuestProfile(profile);
@@ -439,14 +463,12 @@ async function bootstrap(): Promise<void> {
           hud?.pushKillFeed(msg);
         },
         onDamageBreakdown: (bd) => hud?.showDamageBreakdown(bd),
-        onRoundBanner: (msg) => {
-          if (msg.isMatchOver) {
-            profile.stats.matches++;
-            const local = activeShooter ? latestRoom.players.find((p) => p.id === welcome.yourPlayerId) : null;
-            if (local && local.team === msg.winnerTeam) profile.stats.wins++;
-            saveGuestProfile(profile);
-          }
-          hud?.showRoundBanner(msg);
+        onMatchEnded: (msg) => {
+          profile.stats.matches++;
+          const local = activeShooter ? latestRoom.players.find((p) => p.id === welcome.yourPlayerId) : null;
+          if (local && local.team === msg.winnerTeam) profile.stats.wins++;
+          saveGuestProfile(profile);
+          hud?.showMatchEnded(msg);
         },
         onDangerPing: (msg) => hud?.showDangerPingNotice(msg.playerId === welcome.yourPlayerId ? null : msg.callsign),
         onPauseChanged: (paused) => hud?.setPaused(paused),
@@ -455,7 +477,9 @@ async function bootstrap(): Promise<void> {
         onToggleLoadout: () => {
           hud?.toggleLoadoutModal();
         },
+        onVolumeKey,
       });
+      hud.syncVolumeControls(profile.settings.masterVolume);
 
       for (const m of bufferedMessages) {
         activeShooter.handleServerMessage(m);

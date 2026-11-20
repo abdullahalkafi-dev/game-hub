@@ -21,19 +21,29 @@ Background preloading starts in the lobby. The loading screen shows scene setup 
 
 ## Match loops
 
-### 4v4 Team Deathmatch
+### Continuous deathmatch (every mode)
 
-Each enemy elimination adds a team point while the surviving player keeps their position, current health, and equipment. The first team to 30 wins. At seven minutes, the leading team wins and equal scores produce a draw.
+1v1 Duel, 2v2 Team Duel, and 4v4 Team Deathmatch all play the same way. There are no rounds. Each enemy elimination adds a point to the killer's team while the killer stays exactly where they are, with their current health and equipment. The defeated player respawns after three seconds at a team spawn chosen for cover and distance from enemies, with up to two seconds of spawn protection that ends on gunfire or a grenade throw.
 
-Defeated players respawn after three seconds. The server chooses a team spawn based on cover, enemy distance, and occupancy. Respawns have up to two seconds of protection, which ends on gunfire or a grenade throw. Open **Loadout** with `L` during the countdown to choose a saved setup for the next life.
+A match ends when a team reaches the **kill limit** or when the **time limit** runs out. The team with the most kills wins, and equal scores at timeout produce a draw. In a 1v1 the "team" is the single player, so the player with the most kills wins.
 
-**Healing works during combat phases in every mode.** After five seconds without taking damage, health returns at 10 HP per second up to 100. Any new damage restarts the timer. Check the HP panel for **Recovery in …** and **Recovering health**.
+Open **Loadout** with `L` to choose a saved setup for your next life.
 
-**Ranked TDM** matches eight human players with standard rules and tracks rating by guest profile. Custom rooms let the host pick a 30–900 second time limit and toggle friendly fire. The time limit applies to the full TDM match or to each round in round-based play.
+**Healing works during combat in every mode.** After five seconds without taking damage, health returns at 10 HP per second up to 100. Any new damage restarts the timer. Check the HP panel for **Recovery in …** and **Recovering health**.
 
-### Round-based modes
+### Room settings
 
-Aim Duel, Gunfight, and Tactical Wipeout use a one-second freeze at the start of each round. After a round ends, there is a four-second result window before the next round or the match summary. Gunfight gives both teams a mirrored loadout and changes it every two rounds. Tactical Wipeout adds bomb planting and defusing. Full mode rules are in the [shooter guide](./03-game1-tactical-shooter.md#maps-and-modes).
+When you host a room (or use Quick Play), pick:
+
+| Setting | Options | Default |
+| --- | --- | --- |
+| Match length | 5, 8, 10, 15 minutes, or Unlimited | 8 minutes |
+| Kill limit | 10, 15, 20, 30, 50, or None | 20 kills |
+| Friendly fire | On / off | Off |
+
+Unlimited time with no kill limit never ends on its own. **Public Rooms** lists each room's mode, rules, and live state (for example, "In progress 7:2 • 3:42 left", where 7:2 is the current score), and you can join a match already under way.
+
+**Ranked TDM** matches eight human players with fixed rules (30 kills or seven minutes) and tracks rating by guest profile.
 
 ## Reconnects, host changes, and rematches
 
