@@ -2,7 +2,7 @@ import {
   MAP_LIST,
   MAP_REGISTRY,
   careerLevel,
-  SKIN_LIST,
+  skinsForWeapon,
   ATTACHMENT_REGISTRY,
   SKIN_REGISTRY,
   MODE_CONFIGS,
@@ -408,7 +408,7 @@ export class ShooterHud {
 
       <div class="panel-title">Universal Skin</div>
       <div class="chip-row">
-        ${SKIN_LIST.map((sk) => `<button class="skin-swatch ${primary.skinId === sk.id ? "selected" : ""}" data-inm-skin="${sk.id}" ${careerLevel(this.profile.stats.xp) < (sk.unlockLevel ?? 1) ? "disabled" : ""}><span class="swatch-dot" style="background:${sk.previewGradient};"></span>${sk.name}${careerLevel(this.profile.stats.xp) < (sk.unlockLevel ?? 1) ? ` · Lv. ${sk.unlockLevel}` : ""}</button>`).join("")}
+        ${skinsForWeapon(primary.weaponId).map((sk) => `<button class="skin-swatch ${primary.skinId === sk.id ? "selected" : ""}" data-inm-skin="${sk.id}" ${careerLevel(this.profile.stats.xp) < (sk.unlockLevel ?? 1) ? "disabled" : ""}><span class="swatch-dot" style="background:${sk.previewGradient};"></span>${sk.name}${careerLevel(this.profile.stats.xp) < (sk.unlockLevel ?? 1) ? ` · Lv. ${sk.unlockLevel}` : ""}</button>`).join("")}
       </div>
     `;
 

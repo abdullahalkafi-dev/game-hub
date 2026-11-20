@@ -7,7 +7,7 @@ import {
   MAP_LIST,
   MODE_CONFIGS,
   careerLevel,
-  SKIN_LIST,
+  skinsForWeapon,
   THROWABLE_LIST,
   WEAPON_LIST,
   WEAPON_REGISTRY,
@@ -416,9 +416,9 @@ export class LobbyScreen {
               })
               .join("")}
 
-            <div class="panel-title" style="margin-top:8px;"><span>Universal Skins (PBR)</span></div>
+            <div class="panel-title" style="margin-top:8px;"><span>Skins</span></div>
             <div class="chip-row">
-              ${SKIN_LIST.map(
+              ${skinsForWeapon(editCfg.weaponId).map(
                 (sk) => `
                 <button class="skin-swatch ${editCfg.skinId === sk.id ? "selected" : ""}" data-skin="${sk.id}" ${careerLevel(this.profile.stats.xp) < (sk.unlockLevel ?? 1) ? "disabled" : ""}>
                   <span class="swatch-dot" style="background:${sk.previewGradient};"></span>

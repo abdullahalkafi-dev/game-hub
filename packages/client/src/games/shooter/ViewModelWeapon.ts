@@ -360,7 +360,15 @@ export class ViewModelWeapon {
 
   // ---------------------------------------------------------------- equip / fire
 
+  private lastEquipped: PlayerWeaponConfig | null = null;
+
+  /** Rebuilds the held weapon, e.g. after an imported skin model has finished downloading. */
+  refreshModel(): void {
+    if (this.lastEquipped) this.equip(this.lastEquipped);
+  }
+
   equip(config: PlayerWeaponConfig): void {
+    this.lastEquipped = config;
     for (const plane of this.flashPlanes) plane.parent = this.holder;
     if (this.assembled) {
       this.assembled.dispose();

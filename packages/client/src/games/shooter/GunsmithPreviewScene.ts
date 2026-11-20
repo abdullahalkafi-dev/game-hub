@@ -98,7 +98,7 @@ export class GunsmithPreviewScene {
 
     this.setWeaponConfig(initialConfig);
 
-    void this.modelCache.preloadAll(["sniper", "pistol"]).then(() => {
+    void Promise.all([this.modelCache.preloadAll(["sniper", "pistol"]), this.modelCache.preloadSkinModels()]).then(() => {
       if (this.active) {
         this.setWeaponConfig(this.currentConfig);
       }

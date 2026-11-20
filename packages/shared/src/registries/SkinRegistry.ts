@@ -12,6 +12,30 @@ export interface MaterialZoneOverride {
   metallic?: number;
 }
 
+/**
+ * Describes an imported 3D model that replaces the procedural gun body for a skin.
+ * Positions are fractions of the fitted model's bounding box, so a new model only needs a handful of
+ * numbers: x runs left to right, y bottom to top, z rear (0) to muzzle (1).
+ */
+export interface SkinModelSpec {
+  /** Served path of the optimised binary glTF, e.g. /assets/models/weapons/m416_tactical.glb */
+  url: string;
+  /** Length of the gun from stock to muzzle in metres once in the game. */
+  lengthM: number;
+  /** Set when the model's barrel points the wrong way after loading. */
+  flipForward?: boolean;
+  /** Where the trigger hand holds the gun. */
+  firingGrip: readonly [x: number, y: number, z: number];
+  /** Where the support hand holds the gun (hand-guard). */
+  supportGrip: readonly [x: number, y: number, z: number];
+  /** Where attached optics sit on top of the gun: [y, z]. */
+  optic: readonly [y: number, z: number];
+  /** Where an underbarrel grip attaches below the hand-guard: [y, z]. */
+  underbarrel: readonly [y: number, z: number];
+  /** Height of the muzzle: fraction of the model's height. */
+  muzzleY: number;
+}
+
 export interface SkinBlueprint {
   id: string;
   name: string;
@@ -19,6 +43,8 @@ export interface SkinBlueprint {
   previewGradient: string;
   targetWeaponId?: string; // Omit = UNIVERSAL (works across all current & future weapons)
   unlockLevel?: number;
+  /** Optional imported model. The skin then ignores the colour zones and shows the model as authored. */
+  model?: SkinModelSpec;
   materials: {
     primary: MaterialZoneOverride;
     secondary: MaterialZoneOverride;
@@ -129,6 +155,27 @@ export const SKIN_REGISTRY: Record<string, SkinBlueprint> = {
       accent: { baseColorHex: "#3a3024", roughness: 0.9, metallic: 0.05 },
     },
   },
+  m416_frost_crystal: {
+    id: "m416_frost_crystal",
+    name: "Frost Crystal (M416)",
+    rarity: "LEGENDARY",
+    targetWeaponId: "m416",
+    previewGradient: "linear-gradient(135deg, #7c3aed 0%, #38bdf8 55%, #e0f2fe 100%)",
+    model: {
+      url: "/assets/models/weapons/m416_frost_crystal.glb",
+      lengthM: 0.72,
+      firingGrip: [0.5, 0.3, 0.31],
+      supportGrip: [0.5, 0.44, 0.68],
+      optic: [0.7, 0.6],
+      underbarrel: [0.42, 0.7],
+      muzzleY: 0.57,
+    },
+    materials: {
+      primary: { baseColorHex: "#6d4bd1", roughness: 0.35, metallic: 0.3 },
+      secondary: { baseColorHex: "#38bdf8", roughness: 0.3, metallic: 0.6 },
+      accent: { baseColorHex: "#e0f2fe", roughness: 0.5, metallic: 0.1 },
+    },
+  },
   crimson_viper: {
     id: "crimson_viper",
     name: "Crimson Anodized",
@@ -165,3 +212,13 @@ export const SKIN_REGISTRY: Record<string, SkinBlueprint> = {
 };
 
 export const SKIN_LIST: SkinBlueprint[] = Object.values(SKIN_REGISTRY);
+
+/** Skins that may be equipped on a gun: universal skins plus any made for that exact weapon. */
+export function skinsForWeapon(weaponId: string): SkinBlueprint[] {
+  return SKIN_LIST.filter((skin) => !skin.targetWeaponId || skin.targetWeaponId === weaponId);
+}
+
+/** Cache key under which a skin's imported model is stored. */
+export function skinModelKey(skinId: string): string {
+  return "skin:" + skinId;
+}

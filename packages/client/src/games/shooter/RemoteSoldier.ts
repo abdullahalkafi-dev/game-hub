@@ -136,6 +136,12 @@ export class RemoteSoldier {
     this.iffMat.emissiveColor = Color3.FromHexString(team === "A" ? "#38bdf8" : "#f87171");
   }
 
+  /** Rebuilds the held weapon, e.g. after an imported skin model has finished downloading. */
+  refreshWeaponModel(): void {
+    this.currentWeaponKey = "";
+    this.setWeapon(this.activeSlot === 0 ? this.loadout.primary : this.loadout.secondary);
+  }
+
   setLoadout(loadout: PlayerLoadoutPayload): void {
     this.loadout = loadout;
     this.setWeapon(this.activeSlot === 0 ? loadout.primary : loadout.secondary);

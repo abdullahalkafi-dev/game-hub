@@ -12,7 +12,7 @@ import {
   TransformNode,
   Vector3,
 } from "@babylonjs/core";
-import type { Vec3 } from "@game/shared";
+import { SKIN_REGISTRY, skinModelKey, type Vec3 } from "@game/shared";
 
 export type ModelAssetKey =
   | "soldier"
@@ -51,7 +51,9 @@ export interface InstantiatedProp {
  * Instantiates real 3D props, weapons, and skeletal soldiers at 0ms runtime load cost.
  */
 export class ModelAssetCache {
-  private readonly containers = new Map<ModelAssetKey, AssetContainer>();
+  /** Static props are keyed by ModelAssetKey; imported weapon-skin models by skinModelKey(skinId). */
+  private readonly containers = new Map<string, AssetContainer>();
+  private readonly pendingLoads = new Map<string, Promise<boolean>>();
 
   constructor(private readonly scene: Scene) {}
 
@@ -75,8 +77,40 @@ export class ModelAssetCache {
     );
   }
 
-  has(key: ModelAssetKey): boolean {
+  has(key: string): boolean {
     return this.containers.has(key);
+  }
+
+  /**
+   * Loads the imported models of the given weapon skins (all of them when no ids are given).
+   * Resolves with the ids whose model is newly available, so callers can rebuild those weapons.
+   * Safe to call repeatedly: each model is downloaded once.
+   */
+  async preloadSkinModels(skinIds?: Iterable<string>): Promise<string[]> {
+    const ids = [...new Set(skinIds ?? Object.keys(SKIN_REGISTRY))].filter((id) => SKIN_REGISTRY[id]?.model);
+    const loaded: string[] = [];
+    await Promise.all(ids.map(async (id) => {
+      const key = skinModelKey(id);
+      if (this.containers.has(key)) return;
+      const url = SKIN_REGISTRY[id].model!.url;
+      let pending = this.pendingLoads.get(key);
+      if (!pending) {
+        const slash = url.lastIndexOf("/");
+        pending = SceneLoader.LoadAssetContainerAsync(url.slice(0, slash + 1), url.slice(slash + 1), this.scene)
+          .then((container) => {
+            this.containers.set(key, container);
+            return true;
+          })
+          .catch((error: unknown) => {
+            console.warn("[ModelAssetCache] Failed to load weapon model " + url, error);
+            return false;
+          })
+          .finally(() => this.pendingLoads.delete(key));
+        this.pendingLoads.set(key, pending);
+      }
+      if (await pending) loaded.push(id);
+    }));
+    return loaded;
   }
 
   /**
@@ -141,7 +175,7 @@ export class ModelAssetCache {
   }
 
   instantiateRawModel(
-    key: ModelAssetKey,
+    key: string,
     namePrefix: string,
     cloneMaterials = false
   ): { root: TransformNode; meshes: Mesh[]; dispose: () => void } | null {

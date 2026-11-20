@@ -51,6 +51,8 @@ import {
   distPointToRay,
   getCameraEyePosition,
   COUNTDOWN_SEC,
+  SKIN_REGISTRY,
+  skinModelKey,
   isCombatPhase,
   lerp,
   restoreCharacterPhysics,
@@ -421,6 +423,7 @@ export class ShooterScene {
     this.app.setScene(this.scene);
     onProgress?.(68, "Loading 3D models & PBR assets...");
     await this.modelCache.preloadAll();
+    await this.modelCache.preloadSkinModels(this.modelSkinIds());
     this.assetsReady = true;
     this.buildEnvironment();
     this.applyGraphicsQuality();
@@ -1794,8 +1797,29 @@ export class ShooterScene {
     }
   }
 
+  /** Ids of skins in use (by you or anyone in the room) that bring their own 3D model. */
+  private modelSkinIds(): string[] {
+    const ids = new Set<string>();
+    for (const kit of [this.profile.loadout, ...this.room.players.map((p) => p.loadout)]) {
+      for (const config of [kit.primary, kit.secondary]) if (SKIN_REGISTRY[config.skinId]?.model) ids.add(config.skinId);
+    }
+    return [...ids];
+  }
+
+  /** Downloads any skin models a newly joined or re-kitted player needs, then rebuilds the affected weapons. */
+  private loadMissingSkinModels(): void {
+    const missing = this.modelSkinIds().filter((id) => !this.modelCache.has(skinModelKey(id)));
+    if (!missing.length) return;
+    void this.modelCache.preloadSkinModels(missing).then((loaded) => {
+      if (!loaded.length) return;
+      this.viewModel.refreshModel();
+      for (const soldier of this.remoteSoldiers.values()) soldier.refreshWeaponModel();
+    });
+  }
+
   private syncRemotePlayers(): void {
     if (!this.assetsReady) return;
+    this.loadMissingSkinModels();
     const activeIds = new Set<string>();
     for (const p of this.room.players) {
       if (p.id === this.localPlayerId) continue;

@@ -13,6 +13,8 @@ import {
 import {
   SKIN_REGISTRY,
   computeEffectiveWeaponStats,
+  skinModelKey,
+  type SkinModelSpec,
   type CamoPatternType,
   type MaterialZoneOverride,
   type PlayerWeaponConfig,
@@ -33,6 +35,42 @@ export interface AssembledWeapon {
   supportGrip: Vector3;
   adsAlignOffset: Vector3;
   dispose: () => void;
+}
+
+/**
+ * Fits an imported gun model into the weapon's local space: scaled to the spec length, centred, and with
+ * the grips and sockets placed from the spec's bounding-box fractions. The barrel points along +Z.
+ */
+function fitSkinModel(model: { root: TransformNode; meshes: Mesh[] }, spec: SkinModelSpec) {
+  model.root.rotation.set(0, spec.flipForward ? Math.PI : 0, 0);
+  model.root.scaling.setAll(1);
+  model.root.position.setAll(0);
+  const measure = () => {
+    model.root.computeWorldMatrix(true);
+    for (const mesh of model.meshes) mesh.computeWorldMatrix(true);
+    return model.root.getHierarchyBoundingVectors(true);
+  };
+  const first = measure();
+  model.root.scaling.setAll(spec.lengthM / Math.max(first.max.z - first.min.z, 0.001));
+  const scaled = measure();
+  model.root.position.set(
+    -(scaled.min.x + scaled.max.x) / 2,
+    -(scaled.min.y + scaled.max.y) / 2,
+    -(scaled.min.z + scaled.max.z) / 2,
+  );
+  const b = measure();
+  const at = (fx: number, fy: number, fz: number) => new Vector3(
+    b.min.x + fx * (b.max.x - b.min.x),
+    b.min.y + fy * (b.max.y - b.min.y),
+    b.min.z + fz * (b.max.z - b.min.z),
+  );
+  return {
+    firing: at(...spec.firingGrip),
+    support: at(...spec.supportGrip),
+    optic: at(0.5, spec.optic[0], spec.optic[1]),
+    muzzle: at(0.5, spec.muzzleY, 1),
+    underbarrel: at(0.5, spec.underbarrel[0], spec.underbarrel[1]),
+  };
 }
 
 const patternTextureCache = new WeakMap<Scene, Map<string, Texture>>();
@@ -210,10 +248,20 @@ export function assembleWeaponMesh(
 
   // Check if a real photogrammetry glTF model is cached for Sniper / Pistol
   // The bundled pistol glTF is an exploded parts sheet (slide/frame/mag float apart), so pistols use the procedural build.
-  const realKey = isSniper ? "sniper" : null;
-  const realGlb = realKey ? modelCache?.instantiateRawModel(realKey, `glb_${idSuffix}`, skin.id !== "standard_issue") : null;
+  const skinSpec = skin.model && (!skin.targetWeaponId || skin.targetWeaponId === blueprint.id) ? skin.model : null;
+  const realKey = skinSpec ? skinModelKey(skin.id) : isSniper ? "sniper" : null;
+  const realGlb = realKey
+    ? modelCache?.instantiateRawModel(realKey, `glb_${idSuffix}`, !skinSpec && skin.id !== "standard_issue")
+    : null;
 
-  if (realGlb) {
+  if (realGlb && skinSpec) {
+    realGlb.root.parent = root;
+    const fit = fitSkinModel(realGlb, skinSpec);
+    stockGrips = { firing: fit.firing, support: fit.support };
+    socketOptic.position.copyFrom(fit.optic);
+    socketMuzzle.position.copyFrom(fit.muzzle);
+    socketUnderbarrel.position.copyFrom(fit.underbarrel);
+  } else if (realGlb) {
     realGlb.root.parent = root;
     realGlb.root.computeWorldMatrix(true);
     // Imported weapons can include a separate baked optic. It must not stack with a socket attachment.

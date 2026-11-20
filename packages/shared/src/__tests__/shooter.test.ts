@@ -15,6 +15,7 @@ import {
   PhysicsWorld,
   RingBuffer,
   SKIN_LIST,
+  skinsForWeapon,
   THROWABLE_LIST,
   WEAPON_LIST,
   WEAPON_REGISTRY,
@@ -48,11 +49,23 @@ describe("Modular Registries & Weapon Stat Calculator", () => {
   it("contains 8 weapons, 8 attachments, the base and progression skins, 3 throwables, and 3 maps", () => {
     expect(WEAPON_LIST).toHaveLength(8);
     expect(ATTACHMENT_LIST).toHaveLength(8);
-    expect(SKIN_LIST).toHaveLength(8);
+    expect(SKIN_LIST).toHaveLength(9);
     expect(SKIN_LIST.filter((skin) => skin.unlockLevel).map((skin) => skin.unlockLevel)).toEqual([2, 4]);
     expect(THROWABLE_LIST).toHaveLength(3);
     expect(MAP_LIST).toHaveLength(3);
     expect(PLAYER_BINARY_STRIDE).toBeLessThan(28);
+  });
+
+  it("offers model skins only on the weapon they were made for", () => {
+    const modelSkins = SKIN_LIST.filter((skin) => skin.model);
+    expect(modelSkins.length).toBeGreaterThan(0);
+    for (const skin of modelSkins) {
+      expect(skin.targetWeaponId).toBeDefined();
+      expect(skin.model!.url).toMatch(/^\/assets\/models\/weapons\/[a-z0-9_]+\.glb$/);
+      expect(skinsForWeapon(skin.targetWeaponId!).map((s) => s.id)).toContain(skin.id);
+      expect(skinsForWeapon("akm").map((s) => s.id)).not.toContain(skin.id);
+    }
+    expect(skinsForWeapon("akm").length).toBe(SKIN_LIST.filter((skin) => !skin.targetWeaponId).length);
   });
 
   it("computes effective weapon stats from socket attachments without mutating base blueprints", () => {
