@@ -27,6 +27,15 @@ import { advanceStepPhase } from "./Locomotion.js";
  * - Falls back cleanly to articulated multi-part mesh if Soldier.glb isn't loaded
  * - Team IFF shoulder/helmet strobe + 3rd-person equipped weapon + hit flinch + 1.2s death fall animation
  */
+/** Imported character: scale from its authored height (3.63 units) to a 1.8 m soldier. */
+const VALBY_SCALE = 1.8 / 3.63;
+/** Body bone names of the imported character, mapped to the Mixamo names the pose code uses. */
+const VALBY_BONES: Record<string, string> = {
+  Pelvis: "Hips", Spine1: "Spine1", Head: "Head",
+  L_Thigh: "LeftUpLeg", L_Calf: "LeftLeg", L_UpperArm: "LeftArm", L_Forearm: "LeftForeArm", L_Hand: "LeftHand",
+  R_Thigh: "RightUpLeg", R_Calf: "RightLeg", R_UpperArm: "RightArm", R_Forearm: "RightForeArm", R_Hand: "RightHand",
+};
+
 export class RemoteSoldier {
   public readonly root: TransformNode;
   private readonly modelRoot: TransformNode;
@@ -55,6 +64,12 @@ export class RemoteSoldier {
   private airbornePose = 0;
   private readonly ikInverse = Matrix.Identity();
   private rigHipHeight: number | undefined;
+  /** True for the imported character: its bones have their own axes, so poses are applied around model-space axes. */
+  private modelSpaceRig = false;
+  private rigHipPosition: Vector3 | null = null;
+  private readonly modelX = new Vector3(1, 0, 0);
+  private readonly modelZ = new Vector3(0, 0, 1);
+  private readonly axisScratch = new Vector3();
   private readonly modelInverse = Matrix.Identity();
 
   private weaponMesh: AssembledWeapon | null = null;
@@ -102,24 +117,30 @@ export class RemoteSoldier {
     this.iffBeacon.isPickable = false;
     this.ownedMeshes.push(this.iffBeacon);
 
-    const glbSoldier = this.modelCache?.instantiateSoldier(`p_${playerIndex}`);
+    const imported = this.modelCache?.instantiateSoldier(`p_${playerIndex}`, "valby") ?? null;
+    this.modelSpaceRig = Boolean(imported);
+    const glbSoldier = imported ?? this.modelCache?.instantiateSoldier(`p_${playerIndex}`);
     if (glbSoldier) {
       this.skeletons.push(...glbSoldier.skeletons);
       glbSoldier.root.parent = this.modelRoot;
       // Three.js Soldier.glb faces -Z natively; rotate 180 deg to face +Z
-      glbSoldier.root.rotation.y = Math.PI;
+      glbSoldier.root.rotation.y = this.modelSpaceRig ? 0 : Math.PI;
+      if (this.modelSpaceRig) glbSoldier.root.scaling.setAll(VALBY_SCALE);
       for (const m of glbSoldier.meshes) {
         this.shadowGen?.addShadowCaster(m);
         this.ownedMeshes.push(m);
       }
       const rigPrefix = `p_${playerIndex}_`;
       for (const ag of glbSoldier.animationGroups) {
-        const clip = (ag.name.startsWith(rigPrefix) ? ag.name.slice(rigPrefix.length) : ag.name).toLowerCase();
+        // The imported character ships a single standing-idle loop.
+        const clip = this.modelSpaceRig ? "idle" : (ag.name.startsWith(rigPrefix) ? ag.name.slice(rigPrefix.length) : ag.name).toLowerCase();
         this.animGroups.set(clip, ag);
         ag.stop();
       }
       for (const node of glbSoldier.root.getChildTransformNodes(false)) {
-        const name = node.name.split("mixamorig:")[1];
+        const name = this.modelSpaceRig
+          ? VALBY_BONES[/^p_\d+_Bip001_(.+)_\d+$/.exec(node.name)?.[1] ?? ""]
+          : node.name.split("mixamorig:")[1];
         if (name) this.joints.set(name, node);
       }
       this.rigPoseBefore = scene.onBeforeAnimationsObservable.add(() => this.restoreRigPose());
@@ -233,12 +254,31 @@ export class RemoteSoldier {
     }
     this.posedJoints.length = 0;
     const hips = this.joints.get("Hips");
-    if (hips && this.rigHipHeight !== undefined) hips.position.z = this.rigHipHeight;
+    if (hips && this.modelSpaceRig && this.rigHipPosition) hips.position.copyFrom(this.rigHipPosition);
+    else if (hips && this.rigHipHeight !== undefined) hips.position.z = this.rigHipHeight;
+  }
+
+  /** Rotates a bone around a model-space axis, whatever the bone's own axes are. */
+  private rotateAround(joint: TransformNode, axis: Vector3, angle: number): void {
+    if (!joint.rotationQuaternion || !(joint.parent instanceof TransformNode) || Math.abs(angle) < 0.001) return;
+    joint.parent.computeWorldMatrix(true).invertToRef(this.ikInverse);
+    Vector3.TransformNormalToRef(axis, this.ikInverse, this.axisScratch);
+    if (this.axisScratch.lengthSquared() < 1e-9) return;
+    this.axisScratch.normalize();
+    this.rememberRotation(joint);
+    Quaternion.RotationAxisToRef(this.axisScratch, angle, this.poseDelta);
+    this.poseDelta.multiplyToRef(joint.rotationQuaternion, joint.rotationQuaternion);
   }
 
   private rotateJoint(name: string, pitch: number, roll = 0): void {
     const joint = this.joints.get(name);
     if (!joint?.rotationQuaternion || Math.abs(pitch) + Math.abs(roll) < 0.001) return;
+    if (this.modelSpaceRig) {
+      this.modelRoot.computeWorldMatrix(true);
+      this.rotateAround(joint, this.modelX, pitch);
+      this.rotateAround(joint, this.modelZ, roll);
+      return;
+    }
     this.rememberRotation(joint);
     Quaternion.RotationYawPitchRollToRef(0, pitch, roll, this.poseDelta);
     joint.rotationQuaternion.multiplyInPlace(this.poseDelta);
@@ -320,7 +360,17 @@ export class RemoteSoldier {
   private applyRigPose(): void {
     if (!this.root.isEnabled()) return;
     const hips = this.joints.get("Hips");
-    if (hips) {
+    if (hips && this.modelSpaceRig) {
+      this.rigHipPosition ??= new Vector3();
+      this.rigHipPosition.copyFrom(hips.position);
+      if (hips.parent instanceof TransformNode) {
+        // Lower the body by moving the pelvis straight down in the world, whatever the pelvis axes are.
+        hips.parent.computeWorldMatrix(true).invertToRef(this.ikInverse);
+        this.axisScratch.set(0, -(this.crouchPose * 0.42 + this.slidePose * 0.25), 0);
+        Vector3.TransformNormalToRef(this.axisScratch, this.ikInverse, this.axisScratch);
+        hips.position.addInPlace(this.axisScratch);
+      }
+    } else if (hips) {
       this.rigHipHeight = hips.position.z;
       hips.position.z -= this.crouchPose * 19 + this.slidePose * 11;
     }
@@ -341,8 +391,20 @@ export class RemoteSoldier {
     this.rotateJoint("LeftArm", -this.aimPose * 0.18 - this.vaultPose * 0.24);
 
     this.modelRoot.computeWorldMatrix(true).invertToRef(this.modelInverse);
-    this.moveToJoint("RightHand", this.weaponMount);
-    this.poseWeaponGrip();
+    if (this.modelSpaceRig) {
+      // The idle loop leaves the arms hanging, so hold the weapon at the chest and reach both hands to it.
+      this.weaponMount.position.set(0.2, 1.28 - this.crouchPose * 0.42 - this.slidePose * 0.25, 0.34);
+      this.weaponMount.computeWorldMatrix(true);
+      this.poseWeaponGrip();
+      const firingArm = this.getArm("Right");
+      if (firingArm) {
+        this.weaponMount.computeWorldMatrix(true);
+        this.reachWithArm(firingArm, this.weaponMount.getAbsolutePosition());
+      }
+    } else {
+      this.moveToJoint("RightHand", this.weaponMount);
+      this.poseWeaponGrip();
+    }
     if (this.moveToJoint("HeadTop_End", this.iffBeacon)) this.iffBeacon.position.y += 0.10;
   }
 
@@ -455,8 +517,9 @@ export class RemoteSoldier {
     const onFoot = state.grounded && !state.sliding && !state.vaulting && speed > 0.25;
     const forward = onFoot && distance > 0 ? (dx * Math.sin(state.yaw) + dz * Math.cos(state.yaw)) / distance : 0;
     const side = onFoot && distance > 0 ? (dx * Math.cos(state.yaw) - dz * Math.sin(state.yaw)) / distance : 0;
-    const forwardClip = forward > 0.74 && !state.crouching;
-    this.gaitForward = damp(this.gaitForward, forwardClip ? 0 : forward * Math.min(1, speed / 2.8), 12, dt);
+    // Without walk/run clips the legs are swung by hand, so the gait pose stays on while moving.
+    const forwardClip = this.animGroups.has("walk") && forward > 0.74 && !state.crouching;
+    this.gaitForward = damp(this.gaitForward, forwardClip ? 0 : forward * Math.min(this.animGroups.has("walk") ? 1 : 1.5, speed / 2.8), 12, dt);
     this.gaitSide = damp(this.gaitSide, forwardClip ? 0 : side * Math.min(1, speed / 3.1), 12, dt);
     this.airbornePose = damp(this.airbornePose, !state.grounded && !state.vaulting ? 1 : 0, 15, dt);
     const clip = forwardClip ? speed > 5.6 ? "run" : "walk" : "idle";

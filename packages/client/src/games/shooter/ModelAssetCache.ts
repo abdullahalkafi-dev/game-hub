@@ -16,6 +16,7 @@ import { SKIN_REGISTRY, skinModelKey, type Vec3 } from "@game/shared";
 
 export type ModelAssetKey =
   | "soldier"
+  | "valby"
   | "barrel"
   | "barrier"
   | "crate"
@@ -25,6 +26,7 @@ export type ModelAssetKey =
 
 const MODEL_PATHS: Record<ModelAssetKey, { rootUrl: string; filename: string }> = {
   soldier: { rootUrl: "/assets/models/soldier/", filename: "Soldier.glb" },
+  valby: { rootUrl: "/assets/models/characters/", filename: "valby_nano.glb" },
   barrel: { rootUrl: "/assets/models/Barrel_01/", filename: "Barrel_01.gltf" },
   barrier: { rootUrl: "/assets/models/concrete_road_barrier/", filename: "concrete_road_barrier.gltf" },
   crate: { rootUrl: "/assets/models/old_military_crate/", filename: "old_military_crate.gltf" },
@@ -206,8 +208,8 @@ export class ModelAssetCache {
     };
   }
 
-  instantiateSoldier(namePrefix: string): InstantiatedSoldier | null {
-    const container = this.containers.get("soldier");
+  instantiateSoldier(namePrefix: string, key: "soldier" | "valby" = "soldier"): InstantiatedSoldier | null {
+    const container = this.containers.get(key);
     if (!container) return null;
 
     const entries = container.instantiateModelsToScene(
