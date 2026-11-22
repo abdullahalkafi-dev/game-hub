@@ -70,6 +70,10 @@ function fitSkinModel(model: { root: TransformNode; meshes: Mesh[] }, spec: Skin
     optic: at(0.5, spec.optic[0], spec.optic[1]),
     muzzle: at(0.5, spec.muzzleY, 1),
     underbarrel: at(0.5, spec.underbarrel[0], spec.underbarrel[1]),
+    minZ: b.min.z,
+    maxZ: b.max.z,
+    maxY: b.max.y,
+    minY: b.min.y,
   };
 }
 
@@ -215,8 +219,6 @@ export function assembleWeaponMesh(
   const isSniper = cat === "SNIPER";
   const isSmg = cat === "SMG";
   const isShotgun = cat === "SHOTGUN";
-  const isAkm = blueprint.id === "akm";
-  const isVector = blueprint.id === "vector";
 
   const bodyLen = isPistol ? 0.21 : isSniper ? 0.54 : isSmg ? 0.31 : isShotgun ? 0.44 : 0.40;
   const barrelLen = isPistol ? 0.13 : isSniper ? 0.58 : isSmg ? 0.17 : isShotgun ? 0.46 : 0.32;
@@ -246,6 +248,27 @@ export function assembleWeaponMesh(
   const magNode = new TransformNode(`mag_anim_${idSuffix}`, scene);
   magNode.parent = socketMag;
 
+  const addAttBox = (
+    name: string,
+    w: number,
+    h: number,
+    d: number,
+    x: number,
+    y: number,
+    z: number,
+    mat: PBRMaterial | StandardMaterial,
+    parentNode: TransformNode,
+    rotX = 0
+  ) => {
+    const m = MeshBuilder.CreateBox(`${name}_${idSuffix}`, { width: w, height: h, depth: d }, scene);
+    m.parent = parentNode;
+    m.position.set(x, y, z);
+    m.rotation.x = rotX;
+    m.material = mat;
+    m.isPickable = false;
+    meshes.push(m);
+  };
+
   // Check if a real photogrammetry glTF model is cached for Sniper / Pistol
   // The bundled pistol glTF is an exploded parts sheet (slide/frame/mag float apart), so pistols use the procedural build.
   const skinSpec = skin.model && (!skin.targetWeaponId || skin.targetWeaponId === blueprint.id) ? skin.model : null;
@@ -254,19 +277,27 @@ export function assembleWeaponMesh(
     ? modelCache?.instantiateRawModel(realKey, `glb_${idSuffix}`, !skinSpec && skin.id !== "standard_issue")
     : null;
 
+  let modelMinZ = -0.44;
+  let modelMaxY = 0.072;
+  let railTopY = 0.05;
+
   if (realGlb && skinSpec) {
     realGlb.root.parent = root;
     const fit = fitSkinModel(realGlb, skinSpec);
     stockGrips = { firing: fit.firing, support: fit.support };
     socketOptic.position.copyFrom(fit.optic);
+    socketOptic.position.y = Math.max(fit.optic.y, fit.maxY - 0.012);
     socketMuzzle.position.copyFrom(fit.muzzle);
     socketUnderbarrel.position.copyFrom(fit.underbarrel);
+    modelMinZ = fit.minZ;
+    modelMaxY = fit.maxY;
+    railTopY = socketOptic.position.y;
   } else if (realGlb) {
     realGlb.root.parent = root;
     realGlb.root.computeWorldMatrix(true);
-    // Imported weapons can include a separate baked optic. It must not stack with a socket attachment.
+    // Always disable the baked scope so Iron Sights, Red Dot, and 2x aren't blocked, and 6x uses the modular scope cleanly.
     const bakedOptic = realGlb.root.getDescendants(false, (node) => node.name.endsWith("_scope"))[0];
-    if (attachments.optic) bakedOptic?.setEnabled(false);
+    bakedOptic?.setEnabled(false);
     const getWeaponBounds = () => realGlb.root.getHierarchyBoundingVectors(true, (mesh) =>
       !bakedOptic || (mesh !== bakedOptic && !mesh.isDescendantOf(bakedOptic))
     );
@@ -290,9 +321,37 @@ export function assembleWeaponMesh(
 
     for (const m of realGlb.meshes) m.computeWorldMatrix(true);
     const b3 = getWeaponBounds();
+    const styledMaterials = new Set<PBRMaterial>();
     for (const m of realGlb.meshes) {
-      if (skin.id !== "standard_issue" && m.material instanceof PBRMaterial) {
-        m.material.albedoColor = Color3.FromHexString(skin.materials.primary.baseColorHex ?? "#ffffff");
+      if (skin.id !== "standard_issue" && m.material instanceof PBRMaterial && !styledMaterials.has(m.material)) {
+        styledMaterials.add(m.material);
+        const isAccessory = m.name.includes("wrap") || m.material.name.includes("accesories");
+        const zone = isAccessory ? skin.materials.secondary : skin.materials.primary;
+        const baseColor = Color3.FromHexString(zone.baseColorHex ?? "#ffffff");
+        const camoTex = zone.patternType && zone.patternType !== "NONE"
+          ? getOrCreateCamoTexture(
+              scene,
+              zone.patternType,
+              zone.baseColorHex ?? "#334155",
+              zone.emissiveHex,
+              zone.uvScale ?? 3
+            )
+          : null;
+        if (camoTex) {
+          m.material.albedoTexture = camoTex;
+          m.material.albedoColor = Color3.Lerp(baseColor, Color3.White(), 0.7);
+        } else {
+          // Clear dark photogrammetry diffuse texture while preserving the normal/bump map so skin colors pop cleanly.
+          m.material.albedoTexture = null;
+          m.material.albedoColor = baseColor;
+        }
+        m.material.metallicTexture = null;
+        m.material.roughness = zone.roughness ?? 0.45;
+        m.material.metallic = zone.metallic ?? 0.5;
+        m.material.environmentIntensity = Math.max(m.material.environmentIntensity, 0.7);
+        if (zone.emissiveHex) {
+          m.material.emissiveColor = Color3.FromHexString(zone.emissiveHex).scale(zone.emissiveIntensity ?? 0.7);
+        }
       }
     }
     if (isSniper) {
@@ -305,10 +364,26 @@ export function assembleWeaponMesh(
       };
       socketOptic.position.set(0, Math.max(0.032, b3.max.y), 0.01);
       socketMuzzle.position.set(0, 0.036, Math.max(0.42, b3.max.z - 0.05));
+      if (!attachments.optic) {
+        const frontZ = Math.max(0.28, b3.max.z - 0.14);
+        const rearZ = socketOptic.position.z - 0.04;
+        const topRefY = Math.max(0.032, b3.max.y);
+        const frontTopY = topRefY + 0.016;
+        const frontBottomY = Math.min(0.024, topRefY - 0.022);
+        const frontH = Math.max(0.024, frontTopY - frontBottomY);
+        addAttBox("sniper_iron_front_base", 0.012, 0.012, 0.018, 0, frontBottomY + 0.006, frontZ, matSecondary, root);
+        addAttBox("sniper_iron_front_post", 0.0032, frontH, 0.006, 0, frontTopY - frontH * 0.5, frontZ, matDark, root);
+        addAttBox("sniper_iron_rear_base", 0.024, 0.012, 0.014, 0, topRefY - 0.002, rearZ, matSecondary, root);
+        addAttBox("sniper_iron_rear_wing_l", 0.0045, 0.018, 0.009, -0.0085, topRefY + 0.011, rearZ, matSecondary, root);
+        addAttBox("sniper_iron_rear_wing_r", 0.0045, 0.018, 0.009, 0.0085, topRefY + 0.011, rearZ, matSecondary, root);
+      }
     } else {
       socketOptic.position.set(0, Math.max(0.045, b3.max.y), -0.01);
       socketMuzzle.position.set(0, 0.015, Math.max(0.11, b3.max.z - 0.01));
     }
+    modelMinZ = b3.min.z;
+    modelMaxY = b3.max.y;
+    railTopY = socketOptic.position.y;
   } else {
     const built = buildProceduralGun({
       scene,
@@ -333,28 +408,10 @@ export function assembleWeaponMesh(
       support: built.supportGrip.clone(),
       eject: built.ejectPos.clone(),
     };
+    modelMinZ = isPistol ? -0.14 : isSmg ? -0.36 : -0.44;
+    modelMaxY = built.railTop + 0.022;
+    railTopY = built.railTop;
   }
-
-  const addAttBox = (
-    name: string,
-    w: number,
-    h: number,
-    d: number,
-    x: number,
-    y: number,
-    z: number,
-    mat: PBRMaterial | StandardMaterial,
-    parentNode: TransformNode,
-    rotX = 0
-  ) => {
-    const m = MeshBuilder.CreateBox(`${name}_${idSuffix}`, { width: w, height: h, depth: d }, scene);
-    m.parent = parentNode;
-    m.position.set(x, y, z);
-    m.rotation.x = rotX;
-    m.material = mat;
-    m.isPickable = false;
-    meshes.push(m);
-  };
 
   const addOpticHousing = (name: string, height: number, innerRadius: number, profile: [number, number][]) => {
     const rear = profile[0][1];
@@ -377,13 +434,16 @@ export function assembleWeaponMesh(
   };
 
   // Keep the optical bore open. First-person reticles are drawn in the HUD.
+  const usesImportedModel = Boolean(realGlb && (skinSpec || isSniper));
   let adsHeightOffset = 0.064;
+  let adsZ = 0.30;
   if (attachments.optic === "optic_red_dot") {
-    const centerHeight = 0.026;
+    const centerHeight = 0.028;
+    const wallThick = firstPerson ? 0.0045 : 0.006;
     addAttBox("rd_mount", 0.036, 0.012, 0.062, 0, 0.006, 0, matSecondary, socketOptic);
-    addAttBox("rd_wall_l", 0.006, 0.034, 0.05, -0.018, 0.026, 0, matPrimary, socketOptic);
-    addAttBox("rd_wall_r", 0.006, 0.034, 0.05, 0.018, 0.026, 0, matPrimary, socketOptic);
-    addAttBox("rd_roof", 0.042, 0.006, 0.05, 0, 0.044, 0, matPrimary, socketOptic);
+    addAttBox("rd_wall_l", wallThick, 0.034, 0.05, -0.0185, centerHeight, 0, matPrimary, socketOptic);
+    addAttBox("rd_wall_r", wallThick, 0.034, 0.05, 0.0185, centerHeight, 0, matPrimary, socketOptic);
+    addAttBox("rd_roof", 0.0415, wallThick, 0.05, 0, centerHeight + 0.018, 0, matPrimary, socketOptic);
     if (!firstPerson) {
       addAttBox("rd_glass", 0.03, 0.028, 0.003, 0, centerHeight, 0.01, glassMat, socketOptic);
       dotMat = new StandardMaterial(`rd_dot_${idSuffix}`, scene);
@@ -397,11 +457,13 @@ export function assembleWeaponMesh(
       meshes.push(dot);
     }
     adsHeightOffset = socketOptic.position.y + centerHeight;
+    adsZ = Math.max(0.24 - socketOptic.position.z, usesImportedModel ? -modelMinZ + 0.07 : 0.28);
   } else if (attachments.optic === "optic_2x_acog") {
     const centerHeight = 0.028;
     addAttBox("acog_mount", 0.032, 0.014, 0.075, 0, 0.007, 0, matSecondary, socketOptic);
     addOpticHousing("acog", centerHeight, 0.016, [[0.021, -0.0625], [0.021, 0.0625]]);
     adsHeightOffset = socketOptic.position.y + centerHeight;
+    adsZ = Math.max(0.22 - socketOptic.position.z, usesImportedModel ? -modelMinZ + 0.06 : 0.26);
   } else if (attachments.optic === "optic_6x_sniper") {
     const centerHeight = 0.022;
     for (const rz of [-0.04, 0.04]) {
@@ -436,6 +498,17 @@ export function assembleWeaponMesh(
       }
     }
     adsHeightOffset = socketOptic.position.y + centerHeight;
+    adsZ = Math.max(0.22 - socketOptic.position.z, usesImportedModel ? -modelMinZ + 0.06 : 0.26);
+  } else if (realGlb && skinSpec) {
+    const specExtra = skinSpec as { adsIronHeightBoost?: number; adsIronZ?: number };
+    adsHeightOffset = Math.max(railTopY + 0.020, modelMaxY + 0.010) + (specExtra.adsIronHeightBoost ?? 0);
+    adsZ = specExtra.adsIronZ ?? Math.max(0.38, -modelMinZ + 0.08);
+  } else if (realGlb && isSniper) {
+    adsHeightOffset = Math.max(railTopY + 0.020, modelMaxY + 0.016);
+    adsZ = Math.min(0.56, Math.max(0.38, -modelMinZ * 0.85 + 0.06));
+  } else {
+    adsHeightOffset = isPistol ? 0.056 : isShotgun ? 0.056 : Math.max(0.064, railTopY + 0.0145);
+    adsZ = isPistol ? 0.30 : 0.32;
   }
 
   const ejectNode = new TransformNode(`eject_${idSuffix}`, scene);
@@ -500,7 +573,7 @@ export function assembleWeaponMesh(
       : isPistol
       ? new Vector3(-0.021, -0.09, -0.045)
       : new Vector3(-0.022, attachments.underbarrel === "grip_vertical" ? -0.084 : -0.042, bodyLen * 0.5 + 0.11)),
-    adsAlignOffset: new Vector3(0, -adsHeightOffset, 0.30),
+    adsAlignOffset: new Vector3(0, -adsHeightOffset, adsZ),
     dispose: () => {
       realGlb?.dispose();
       for (const m of meshes) m.dispose();

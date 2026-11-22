@@ -313,7 +313,7 @@ export function stepFpsCharacter(
     }
     const targetVx = wishX * speed;
     const targetVz = wishZ * speed;
-    const accel = state.grounded ? 18 : 6;
+    const accel = state.grounded ? (wishLen < 0.05 ? 26 : 18) : 6;
     state.velocity.x = damp(state.velocity.x, targetVx, accel, dt);
     state.velocity.z = damp(state.velocity.z, targetVz, accel, dt);
   }
@@ -478,26 +478,26 @@ export function computePlayerHitboxes(
       y: headY,
       z: state.position.z + rightZ * leanShift,
     },
-    headRadius: 0.21,
+    headRadius: 0.22,
     chestMin: {
-      x: state.position.x + rightX * (leanShift * 0.65) - 0.28,
+      x: state.position.x + rightX * (leanShift * 0.65) - 0.33,
       y: chestCenterY - 0.34,
-      z: state.position.z + rightZ * (leanShift * 0.65) - 0.28,
+      z: state.position.z + rightZ * (leanShift * 0.65) - 0.33,
     },
     chestMax: {
-      x: state.position.x + rightX * (leanShift * 0.65) + 0.28,
+      x: state.position.x + rightX * (leanShift * 0.65) + 0.33,
       y: chestCenterY + 0.34,
-      z: state.position.z + rightZ * (leanShift * 0.65) + 0.28,
+      z: state.position.z + rightZ * (leanShift * 0.65) + 0.33,
     },
     limbMin: {
-      x: state.position.x - 0.26,
+      x: state.position.x - 0.29,
       y: state.position.y,
-      z: state.position.z - 0.26,
+      z: state.position.z - 0.29,
     },
     limbMax: {
-      x: state.position.x + 0.26,
+      x: state.position.x + 0.29,
       y: state.position.y + limbHeight,
-      z: state.position.z + 0.26,
+      z: state.position.z + 0.29,
     },
   };
 }

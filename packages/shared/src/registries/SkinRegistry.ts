@@ -34,6 +34,10 @@ export interface SkinModelSpec {
   underbarrel: readonly [y: number, z: number];
   /** Height of the muzzle: fraction of the model's height. */
   muzzleY: number;
+  /** Optional iron-sight height override when no optic is mounted. */
+  adsIronHeightBoost?: number;
+  /** Optional iron-sight Z position override. */
+  adsIronZ?: number;
 }
 
 export interface SkinBlueprint {

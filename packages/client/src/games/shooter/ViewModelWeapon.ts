@@ -369,6 +369,12 @@ export class ViewModelWeapon {
 
   equip(config: PlayerWeaponConfig): void {
     this.lastEquipped = config;
+    this.cancelInspect();
+    this.kickZ = 0;
+    this.kickPitch = 0;
+    this.boltKick = 0;
+    this.swayX = 0;
+    this.swayY = 0;
     for (const plane of this.flashPlanes) plane.parent = this.holder;
     if (this.assembled) {
       this.assembled.dispose();
@@ -630,6 +636,7 @@ export class ViewModelWeapon {
     this.boltKick = damp(this.boltKick, 0, 28, dt);
 
     const hipMotion = 1 - adsAlpha;
+    const adsStability = 1 - adsAlpha * 0.86;
     const bobAmp = grounded && !sliding ? Math.min(1, speedXZ / 6.0) * hipMotion * 0.011 : 0;
     const bobX = Math.cos(strideAngle) * bobAmp;
     const bobY = Math.abs(Math.sin(strideAngle)) * bobAmp;
@@ -640,17 +647,17 @@ export class ViewModelWeapon {
     const targetZ = this.hipPos.z * hipMotion + adsOffset.z * adsAlpha - this.sprintAlpha * 0.04;
 
     this.currentPos.set(
-      targetX + this.swayX * hipMotion + bobX,
-      targetY + this.swayY * hipMotion - bobY - this.reloadDip * 0.14 - this.equipDip * 0.15 - this.grenadeLower * 0.3 -
+      targetX + this.swayX * adsStability + bobX,
+      targetY + this.swayY * adsStability - bobY - this.reloadDip * 0.14 - this.equipDip * 0.15 - this.grenadeLower * 0.3 -
         slash * 0.42 + hipMotion * Math.sin(this.breathClock) * 0.0028 + inspectPose * 0.065,
-      targetZ - this.kickZ
+      targetZ - this.kickZ * (1 - adsAlpha * 0.35)
     );
 
     this.holder.position.copyFrom(this.currentPos);
     const slideTilt = sliding ? -0.35 : 0;
     this.holder.rotation.set(
-      -this.kickPitch * hipMotion + this.reloadDip * 0.42 + this.sprintAlpha * 0.24 + this.equipDip * 0.28 + this.grenadeLower * 0.5,
-      this.swayX * hipMotion * 1.4 - this.sprintAlpha * 0.55 - inspectPose * 0.63,
+      -this.kickPitch * (1 - adsAlpha * 0.78) + this.reloadDip * 0.42 + this.sprintAlpha * 0.24 + this.equipDip * 0.28 + this.grenadeLower * 0.5,
+      this.swayX * adsStability * 1.4 - this.sprintAlpha * 0.55 - inspectPose * 0.63,
       slideTilt * hipMotion + this.reloadDip * 0.38 + this.sprintAlpha * 0.22 + inspectPose * 0.68
     );
     this.knife.setEnabled(this.shown && this.meleeTimer > 0);

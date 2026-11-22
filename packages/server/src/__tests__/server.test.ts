@@ -412,8 +412,8 @@ describe("LagCompensator & Authoritative FPS Room", () => {
       }
     });
 
-    it("keeps the winner in place and applies the defeated player's queued kit on a protected respawn", async () => {
-      const { room, alpha, bravo, step, damage } = await createMatch();
+    it("keeps the winner in place and applies the defeated player's kit immediately and across a protected respawn", async () => {
+      const { room, client, alpha, bravo, step, damage } = await createMatch();
       try {
         alpha.state.position = { x: 3, y: 0, z: 2 };
         alpha.hp = 75;
@@ -422,7 +422,8 @@ describe("LagCompensator & Authoritative FPS Room", () => {
         kit.primary.weaponId = "m870";
         kit.tdmThrowables = ["flashbang", "smoke"];
         room.handleClientMessage(bravo.id, { type: "SET_LOADOUT", loadout: kit });
-        expect(bravo.effectivePrimary.weaponId).toBe("m416");
+        expect(bravo.effectivePrimary.weaponId).toBe("m870");
+        expect(bravo.throwableStock).toEqual({ frag: 0, flashbang: 1, smoke: 1 });
 
         const epoch = alpha.movementEpoch;
         damage(alpha, bravo, 100);
@@ -441,6 +442,20 @@ describe("LagCompensator & Authoritative FPS Room", () => {
         expect(bravo.effectivePrimary.weaponId).toBe("m870");
         expect(bravo.throwableStock).toEqual({ frag: 0, flashbang: 1, smoke: 1 });
         damage(alpha, bravo, 40);
+        expect(bravo.hp).toBe(100);
+        client.messages.length = 0;
+        room.handleClientMessage(alpha.id, {
+          type: "FIRE_SHOT",
+          seq: 1,
+          origin: { x: bravo.state.position.x, y: bravo.state.position.y + 1.2, z: bravo.state.position.z - 1.2 },
+          dir: { x: 0, y: 0, z: 1 },
+          activeSlot: 0,
+          ads: true,
+          crouching: false,
+          grounded: true,
+          clientTimeMs: Date.now(),
+        });
+        expect(client.messages).toContainEqual(expect.objectContaining({ type: "HIT_CONFIRM", tier: "PROTECTED", damage: 0 }));
         expect(bravo.hp).toBe(100);
         room.handleClientMessage(bravo.id, {
           type: "FIRE_SHOT", seq: 1, origin: getCameraEyePosition(bravo.state), dir: { x: 0, y: 0, z: -1 },

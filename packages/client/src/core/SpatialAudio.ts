@@ -410,6 +410,20 @@ export class SpatialAudio {
     this.unlock();
     if (!this.ctx || !this.feedbackGain) return;
     const now = this.ctx.currentTime;
+    if (tier === "PROTECTED") {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.connect(g);
+      g.connect(this.feedbackGain);
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(520, now);
+      osc.frequency.exponentialRampToValueAtTime(260, now + 0.07);
+      g.gain.setValueAtTime(0.16, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.075);
+      osc.start(now);
+      osc.stop(now + 0.08);
+      return;
+    }
     if (headshot) {
       if (this.headshotAnnouncer && now - this.lastHeadshotVoice >= 0.85 &&
         this.playSample("headshot-voice", 0.38, 1.08, undefined, false, this.feedbackGain)) {
@@ -444,7 +458,7 @@ export class SpatialAudio {
       g.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
       osc.start(now);
       osc.stop(now + 0.14);
-    } else {
+    } else if (tier === "KILL") {
       // KILL chime + low drop
       osc.type = "sine";
       osc.frequency.setValueAtTime(1320, now);
@@ -453,6 +467,9 @@ export class SpatialAudio {
       g.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
       osc.start(now);
       osc.stop(now + 0.24);
+    } else {
+      osc.disconnect();
+      g.disconnect();
     }
   }
 

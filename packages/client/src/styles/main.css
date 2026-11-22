@@ -542,6 +542,12 @@ body {
   font-size: 20px;
 }
 
+.score-team-label {
+  font-size: 12px;
+  letter-spacing: 0.9px;
+  opacity: 0.92;
+}
+
 .score-a { color: #38bdf8; }
 .score-b { color: #f87171; }
 
@@ -959,6 +965,17 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+}
+
+.hud-hit-label {
+  position: absolute;
+  top: -16px;
+  left: 22px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
 }
 
 .hud-arena-notice, .hud-replay {

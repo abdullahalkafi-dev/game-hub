@@ -64,6 +64,7 @@ export class RemoteSoldier {
   private flinchTimer = 0;
   private wasAlive = false;
   private deathFallTimer = 0;
+  private relationOverride: boolean | null = null;
 
   constructor(
     private readonly scene: Scene,
@@ -86,7 +87,7 @@ export class RemoteSoldier {
 
     // Subtle team IFF indicator strobe above shoulder
     this.iffMat = new StandardMaterial(`iff_mat_${playerId}`, scene);
-    this.iffMat.emissiveColor = Color3.FromHexString(team === "A" ? "#38bdf8" : "#f87171");
+    this.updateIffColor();
     this.iffMat.disableLighting = true;
     this.ownedMats.push(this.iffMat);
 
@@ -130,10 +131,21 @@ export class RemoteSoldier {
     this.setWeapon(loadout.primary);
   }
 
+  private updateIffColor(): void {
+    const isAlly = this.relationOverride ?? (this.team === "A");
+    this.iffMat.emissiveColor = Color3.FromHexString(isAlly ? "#38bdf8" : "#f87171");
+  }
+
   setTeam(team: TeamId): void {
     if (this.team === team) return;
     this.team = team;
-    this.iffMat.emissiveColor = Color3.FromHexString(team === "A" ? "#38bdf8" : "#f87171");
+    this.updateIffColor();
+  }
+
+  setRelation(isAlly: boolean): void {
+    if (this.relationOverride === isAlly) return;
+    this.relationOverride = isAlly;
+    this.updateIffColor();
   }
 
   /** Rebuilds the held weapon, e.g. after an imported skin model has finished downloading. */
@@ -435,7 +447,7 @@ export class RemoteSoldier {
     }
     this.modelRoot.rotation.z = damp(this.modelRoot.rotation.z, -state.lean * 0.24, 14, dt);
     this.modelRoot.rotation.x = damp(this.modelRoot.rotation.x, flinchTilt + this.slidePose * 0.22, 18, dt);
-    this.modelRoot.position.x = damp(this.modelRoot.position.x, state.lean * 0.22, 14, dt);
+    this.modelRoot.position.x = damp(this.modelRoot.position.x, state.lean * 0.30, 14, dt);
 
     this.weaponMount.rotation.x = -state.pitch * 0.85;
 

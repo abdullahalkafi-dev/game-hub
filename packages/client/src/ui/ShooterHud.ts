@@ -103,12 +103,12 @@ export class ShooterHud {
       </div>
 
       <div class="scoreboard-top">
-        <div class="score-team score-a"><span>TEAM A</span><span id="hud-score-a">0</span></div>
+        <div class="score-team score-a"><span class="score-team-label" id="hud-label-ally">YOUR TEAM</span><span id="hud-score-ally">0</span></div>
         <div class="timer-box">
           <div class="timer-val" id="hud-timer">0:45</div>
           <div class="phase-sub" id="hud-phase">WARMUP</div>
         </div>
-        <div class="score-team score-b"><span id="hud-score-b">0</span><span>TEAM B</span></div>
+        <div class="score-team score-b"><span id="hud-score-enemy">0</span><span class="score-team-label" id="hud-label-enemy">ENEMY</span></div>
       </div>
 
       <div class="telemetry-badge" id="hud-telemetry" title="Round-trip time, time since last snapshot, and movement corrections">Connecting…</div>
@@ -359,7 +359,6 @@ export class ShooterHud {
     const kitSlot = this.profile.tdmKitSlot ?? 0;
     const kits = isTdm ? this.getTdmKits(kitSlot) : undefined;
     const primary = this.profile.loadout.primary;
-    const applyAtRespawn = isTdm && (this.room?.phase === "LIVE" || this.room?.phase === "COUNTDOWN");
     const bp = WEAPON_REGISTRY[primary.weaponId] ?? WEAPON_REGISTRY.m416;
     const primaries = WEAPON_LIST.filter((w) => w.category !== "PISTOL");
     const slots: { slot: AttachmentSlot; label: string }[] = [
@@ -373,7 +372,7 @@ export class ShooterHud {
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div>
           <div style="font-size:18px;font-weight:900;">IN-MATCH QUICK LOADOUT</div>
-          <div style="font-size:12px;color:var(--text-muted);">${applyAtRespawn ? "Changes apply on your next life." : "Choose your weapon and gear."}</div>
+          <div style="font-size:12px;color:var(--text-muted);">Changes apply immediately.</div>
         </div>
         <button class="btn btn-primary" id="inm-lo-apply">Apply & Resume</button>
       </div>
@@ -492,14 +491,24 @@ export class ShooterHud {
     }
   }
 
+  private getTeamPerspective(room: RoomStateBroadcast) {
+    const local = room.players.find((p) => p.id === this.localPlayerId);
+    const myTeam: "A" | "B" = local?.team ?? "A";
+    const enemyTeam: "A" | "B" = myTeam === "A" ? "B" : "A";
+    const myScore = myTeam === "A" ? room.scoreA : room.scoreB;
+    const enemyScore = myTeam === "A" ? room.scoreB : room.scoreA;
+    return { local, myTeam, enemyTeam, myScore, enemyScore };
+  }
+
   private renderScoreboardOverlay(room: RoomStateBroadcast): void {
     const el = this.root.querySelector("#hud-scoreboard-tab");
     if (!el) return;
     const mapName = MAP_REGISTRY[room.mapId]?.name ?? room.mapId;
-    const teamA = room.players.filter((p) => p.team === "A");
-    const teamB = room.players.filter((p) => p.team === "B");
+    const { myTeam, enemyTeam, myScore, enemyScore } = this.getTeamPerspective(room);
+    const allyPlayers = room.players.filter((p) => p.team === myTeam);
+    const enemyPlayers = room.players.filter((p) => p.team === enemyTeam);
 
-    const renderRows = (list: typeof teamA, accent: string) =>
+    const renderRows = (list: typeof allyPlayers, accent: string) =>
       list
         .map(
           (p) => `
@@ -523,17 +532,17 @@ export class ShooterHud {
           <div style="font-size:11px;color:var(--text-muted);">${this.describeMatchRules(room)}</div>
         </div>
         <div style="font-family:var(--font-mono);font-size:20px;font-weight:900;">
-          <span style="color:#38bdf8;">${room.scoreA}</span> : <span style="color:#f87171;">${room.scoreB}</span>
+          <span style="color:#38bdf8;">${myScore}</span> : <span style="color:#f87171;">${enemyScore}</span>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
         <div style="display:grid;gap:5px;">
-          <div style="font-size:11px;font-weight:900;color:#38bdf8;letter-spacing:1px;">TEAM A</div>
-          ${renderRows(teamA, "#38bdf8")}
+          <div style="font-size:11px;font-weight:900;color:#38bdf8;letter-spacing:1px;">YOUR TEAM · TEAM ${myTeam}</div>
+          ${renderRows(allyPlayers, "#38bdf8")}
         </div>
         <div style="display:grid;gap:5px;">
-          <div style="font-size:11px;font-weight:900;color:#f87171;letter-spacing:1px;">TEAM B</div>
-          ${renderRows(teamB, "#f87171")}
+          <div style="font-size:11px;font-weight:900;color:#f87171;letter-spacing:1px;">ENEMY TEAM · TEAM ${enemyTeam}</div>
+          ${renderRows(enemyPlayers, "#f87171")}
         </div>
       </div>
     `;
@@ -600,15 +609,17 @@ export class ShooterHud {
       if (el) el.textContent = txt;
     };
 
+    const { local, myScore, enemyScore } = this.getTeamPerspective(room);
     setText("#hud-room-code", `ROOM ${room.code}`);
     setText("#hud-map-label", `${map?.name ?? room.mapId} (${room.mode})`);
-    setText("#hud-score-a", String(room.scoreA));
-    setText("#hud-score-b", String(room.scoreB));
+    setText("#hud-label-ally", "YOUR TEAM");
+    setText("#hud-score-ally", String(myScore));
+    setText("#hud-label-enemy", "ENEMY");
+    setText("#hud-score-enemy", String(enemyScore));
 
     setText("#hud-timer", this.formatClock(room));
     setText("#hud-phase", this.describeMatchRules(room));
 
-    const local = room.players.find((p) => p.id === this.localPlayerId);
     const hostStartBtn = this.root.querySelector("#hud-host-start");
     if (hostStartBtn) {
       hostStartBtn.classList.toggle("hidden", !(local?.isHost && !room.matchRules?.ranked && room.phase === "WARMUP" && room.mode !== "WARMUP"));
@@ -636,7 +647,7 @@ export class ShooterHud {
   }
 
   private refreshPausePanel(room: RoomStateBroadcast): void {
-    const local = room.players.find((p) => p.id === this.localPlayerId);
+    const { local, myTeam } = this.getTeamPerspective(room);
     const infoEl = this.root.querySelector("#pause-room-info");
     if (infoEl) {
       infoEl.textContent = `Code: ${room.code} • ${room.isPublic ? "Public" : "Private"} • ${room.mode}`;
@@ -649,14 +660,17 @@ export class ShooterHud {
     const listEl = this.root.querySelector("#pause-players");
     if (listEl) {
       listEl.innerHTML = room.players
-        .map(
-          (p) => `
+        .map((p) => {
+          const isAlly = p.team === myTeam;
+          const tagColor = isAlly ? "#38bdf8" : "#f87171";
+          const tagLabel = p.id === this.localPlayerId ? "YOU" : isAlly ? "ALLY" : "ENEMY";
+          return `
         <div style="display:flex;justify-content:space-between;background:rgba(255,255,255,0.04);padding:6px 10px;border-radius:6px;font-size:12px;">
-          <span><strong style="color:${p.team === "A" ? "#38bdf8" : "#f87171"}">[${p.team}]</strong> ${escapeText(p.callsign)} ${p.isHost ? "👑" : ""} ${p.isBot ? "(AI)" : ""}</span>
+          <span><strong style="color:${tagColor}">[${tagLabel}]</strong> ${escapeText(p.callsign)} ${p.isHost ? "👑" : ""} ${p.isBot ? "(AI)" : ""}</span>
           <span style="font-family:var(--font-mono);color:var(--text-muted);">${p.kills}K / ${p.deaths}D</span>
         </div>
-      `
-        )
+      `;
+        })
         .join("");
     }
 
@@ -843,7 +857,7 @@ export class ShooterHud {
       Math.round(s.crosshairGap * snap.spreadBloom), s.crosshairSize, s.crosshairColor].join("|");
     if (chEl && this.crosshairKey !== crosshairKey) {
       this.crosshairKey = crosshairKey;
-      if (isScoped || (snap.ads && snap.adsScopeLevel !== "NONE") || !snap.alive) {
+      if (isScoped || snap.ads || !snap.alive) {
         chEl.innerHTML =
           snap.ads && snap.adsScopeLevel === "RED_DOT"
             ? `<div class="optic-red-dot"></div>`
@@ -962,10 +976,17 @@ export class ShooterHud {
         ? "#ef4444"
         : tier === "HEADSHOT"
           ? "#f87171"
-          : tier === "ARMOR_BREAK"
+          : tier === "ARMOR_BREAK" || tier === "PROTECTED"
             ? "#38bdf8"
             : "#ffffff";
-    const cross = `
+    const cross =
+      tier === "PROTECTED"
+        ? `
+      <svg width="28" height="28" viewBox="0 0 28 28">
+        <path d="M14 4 L22 7.5 V13.5 C22 18.8 18.5 22.8 14 24.5 C9.5 22.8 6 18.8 6 13.5 V7.5 Z" fill="rgba(56,189,248,0.18)" stroke="${color}" stroke-width="2"/>
+      </svg>
+    `
+        : `
       <svg width="28" height="28">
         <line x1="3" y1="3" x2="10" y2="10" stroke="${color}" stroke-width="2.5"/>
         <line x1="25" y1="3" x2="18" y2="10" stroke="${color}" stroke-width="2.5"/>
@@ -974,15 +995,16 @@ export class ShooterHud {
       </svg>
     `;
     const style = this.profile.settings.hitMarkerStyle;
+    const text = tier === "PROTECTED" ? "PROTECTED" : `${Math.round(damage)}${isWallbang ? " WB" : ""}`;
     hm.innerHTML = `
-      ${style === "CROSS" ? cross : style === "DOT" ? `<i class="hud-hit-dot" style="background:${color}"></i>` : ""}
-      <div style="position:absolute;top:-16px;left:22px;font-size:11px;font-weight:900;color:${color};white-space:nowrap;">
-        ${Math.round(damage)}${isWallbang ? " WB" : ""}
+      ${style === "CROSS" || tier === "PROTECTED" ? cross : style === "DOT" ? `<i class="hud-hit-dot" style="background:${color}"></i>` : ""}
+      <div class="hud-hit-label" style="color:${color};">
+        ${text}
       </div>
     `;
     hm.classList.add("show");
     if (this.hitmarkerTimeout) clearTimeout(this.hitmarkerTimeout);
-    this.hitmarkerTimeout = setTimeout(() => hm.classList.remove("show"), 160);
+    this.hitmarkerTimeout = setTimeout(() => hm.classList.remove("show"), tier === "PROTECTED" ? 320 : 160);
   }
 
   pushKillFeed(msg: Extract<ServerToClientMessage, { type: "KILL_FEED" }>): void {
@@ -1128,9 +1150,16 @@ export class ShooterHud {
       const panel = this.root.querySelector("#hud-match-results");
       if (!panel) return;
       const local = event.players.find((player) => player.id === this.localPlayerId);
+      const localTeam = local?.team ?? this.room?.players.find((p) => p.id === this.localPlayerId)?.team;
       const mvp = event.players.find((player) => player.id === event.mvpId);
+      const resultHeadline =
+        event.winnerTeam === "DRAW"
+          ? "Draw"
+          : localTeam
+            ? (event.winnerTeam === localTeam ? "Victory" : "Defeat")
+            : `Team ${event.winnerTeam} wins`;
       panel.innerHTML = `
-        <strong>${event.winnerTeam === "DRAW" ? "Draw" : `Team ${event.winnerTeam} wins`}</strong>
+        <strong>${resultHeadline}</strong>
         ${mvp ? `<div>MVP · ${escapeText(mvp.callsign)}</div>` : ""}
         <table><thead><tr><th>Player</th><th>K / D</th><th>Accuracy</th><th>Headshot kills</th><th>Streak</th></tr></thead>
         <tbody>${event.players.map((player) => `<tr>

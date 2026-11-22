@@ -171,7 +171,7 @@ export interface DamageBreakdownPayload {
   distanceM?: number;
 }
 
-export type HitMarkerTier = "BODY" | "ARMOR_BREAK" | "HEADSHOT" | "KILL";
+export type HitMarkerTier = "PROTECTED" | "BODY" | "ARMOR_BREAK" | "HEADSHOT" | "KILL";
 export type BotDifficulty = "EASY" | "NORMAL" | "PRO";
 
 export interface RoomStateBroadcast {
@@ -241,6 +241,7 @@ export type ClientToServerMessage =
       dir: Vec3;
       activeSlot: 0 | 1;
       ads: boolean;
+      adsAlpha?: number;
       crouching: boolean;
       grounded: boolean;
       clientTimeMs: number;

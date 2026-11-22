@@ -31,6 +31,7 @@ import {
   intersectRayHitboxes,
   sampleShotCone,
   shotSpreadMultiplier,
+  shotSpreadRadians,
   stepFpsCharacter,
 } from "../index.js";
 
@@ -95,6 +96,28 @@ describe("Modular Registries & Weapon Stat Calculator", () => {
     // Base blueprint remains untouched
     expect(WEAPON_REGISTRY.m416.stats.magSize).toBe(baseMag);
     expect(WEAPON_REGISTRY.m416.recoilPattern.vertical).toBe(baseRecoil);
+  });
+
+  it("interpolates spread smoothly with numeric adsAlpha and uses 46° iron-sight FOV for un-scoped snipers", () => {
+    const stats = { hipSpreadDeg: 4.0, adsSpreadDeg: 0.2 };
+    const idleState = { crouching: false, grounded: true, speed: 0 };
+    const movingState = { crouching: false, grounded: true, speed: 5.0 };
+
+    const hip = shotSpreadRadians(stats, 0, idleState);
+    const half = shotSpreadRadians(stats, 0.5, idleState);
+    const full = shotSpreadRadians(stats, 1, idleState);
+    expect(hip).toBeCloseTo(shotSpreadRadians(stats, false, idleState), 8);
+    expect(full).toBeCloseTo(shotSpreadRadians(stats, true, idleState), 8);
+    expect(half).toBeCloseTo(((4.0 + (0.2 - 4.0) * 0.75) * Math.PI) / 180, 8);
+    expect(shotSpreadRadians(stats, 1, idleState, true)).toBeCloseTo(full * 0.45, 8);
+    expect(shotSpreadRadians(stats, 1, movingState)).toBeCloseTo(
+      (0.2 * (1 + (1.5 - 1) * 0.22) * Math.PI) / 180,
+      8
+    );
+
+    expect(computeEffectiveWeaponStats("kar98k", {}).adsFov).toBe(46);
+    expect(computeEffectiveWeaponStats("awm", {}).adsFov).toBe(46);
+    expect(computeEffectiveWeaponStats("kar98k", { optic: "optic_6x_sniper" }).adsFov).not.toBe(46);
   });
 });
 

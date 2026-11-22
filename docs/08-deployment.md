@@ -1,6 +1,6 @@
 # 08 — Deployment
 
-The production site runs at https://game-hub.joura.info on a single Ubuntu VPS that also hosts other apps. Everything here is Docker, so the game does not touch the host's Node or any other project.
+The production site runs at https://game-hub.joura.info on a single Ubuntu VPS (`72.60.26.180`, SSH: `ssh root@72.60.26.180`) that also hosts other apps. Everything here is Docker, so the game does not touch the host's Node or any other project.
 
 ## How the pieces fit
 
@@ -23,9 +23,10 @@ The [Dockerfile](../Dockerfile) builds once and produces two targets, `server` a
 
 ## Deploy an update
 
-On your machine, push to `main`. Then on the VPS:
+On your machine, push to `main`. Then connect to the VPS (`ssh root@72.60.26.180`) and rebuild:
 
 ```bash
+ssh root@72.60.26.180
 cd /opt/game-hub
 git pull
 docker compose up -d --build

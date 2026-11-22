@@ -90,6 +90,8 @@ export function computeEffectiveWeaponStats(
     if (m.useSuppressedAudio) useSuppressedAudio = true;
   }
 
+  if (base.category === "SNIPER" && !equipped.optic) adsFov = 46;
+
   const magSize = Math.max(1, Math.round(base.stats.magSize * magMult + magBonus));
 
   return {

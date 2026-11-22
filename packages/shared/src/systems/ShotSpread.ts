@@ -7,9 +7,23 @@ export function shotSpreadMultiplier(state: { crouching: boolean; grounded: bool
   return (state.crouching ? 0.7 : 1) * (state.grounded ? 1 : 2.5) * (state.speed > 1.2 ? 1.5 : 1);
 }
 
-export function shotSpreadRadians(stats: Pick<EffectiveWeaponStats, "hipSpreadDeg" | "adsSpreadDeg">,
-  ads: boolean, state: Parameters<typeof shotSpreadMultiplier>[0]): number {
-  return (ads ? stats.adsSpreadDeg : stats.hipSpreadDeg) * shotSpreadMultiplier(state) * Math.PI / 180;
+export function shotSpreadRadians(
+  stats: Pick<EffectiveWeaponStats, "hipSpreadDeg" | "adsSpreadDeg">,
+  ads: boolean | number,
+  state: Parameters<typeof shotSpreadMultiplier>[0],
+  firstShot = false
+): number {
+  const adsAlpha = typeof ads === "number" ? Math.max(0, Math.min(1, ads)) : ads ? 1 : 0;
+  const smoothAds = adsAlpha * (2 - adsAlpha);
+  const baseDeg = stats.hipSpreadDeg + (stats.adsSpreadDeg - stats.hipSpreadDeg) * smoothAds;
+  let mult = shotSpreadMultiplier(state);
+  if (state.grounded && adsAlpha > 0 && mult > 1) {
+    mult = mult + (1 + (mult - 1) * 0.22 - mult) * adsAlpha;
+  }
+  if (firstShot && state.grounded && adsAlpha >= 0.85) {
+    mult *= 0.45;
+  }
+  return (baseDeg * mult * Math.PI) / 180;
 }
 
 /** Sample a circular cone in aim space, including when aiming across the map or vertically. */

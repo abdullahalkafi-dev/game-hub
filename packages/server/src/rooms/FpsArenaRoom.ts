@@ -85,7 +85,7 @@ const MAX_MOVEMENT_CREDIT_TICKS = 12;
 const MAX_INPUTS_PER_ROOM_TICK = 3;
 type HitConfirmation = Extract<ServerToClientMessage, { type: "HIT_CONFIRM" }>;
 type ShotTarget = { player: RoomPlayer; hitboxes: PlayerHitboxes };
-const HIT_PRIORITY: Record<HitMarkerTier, number> = { BODY: 0, ARMOR_BREAK: 1, HEADSHOT: 2, KILL: 3 };
+const HIT_PRIORITY: Record<HitMarkerTier, number> = { PROTECTED: 0, BODY: 1, ARMOR_BREAK: 2, HEADSHOT: 3, KILL: 4 };
 
 export interface ClientSender {
   sendJson: (msg: ServerToClientMessage) => void;
@@ -155,6 +155,7 @@ interface RoomPlayer {
   reloadTimer: number;
   reloadSlot: 0 | 1;
   nextShotAllowedAtMs: number;
+  lastShotAtMs: number;
   throwablesLeft: number;
   throwableStock: ThrowableStock;
   respawnTimer: number;
@@ -515,6 +516,7 @@ export class FpsArenaRoom {
       reloadTimer: 0,
       reloadSlot: 0,
       nextShotAllowedAtMs: 0,
+      lastShotAtMs: 0,
       throwablesLeft: 2,
       throwableStock: createThrowableStock(opts.loadout.throwable, opts.loadout.tdmThrowables),
       respawnTimer: 0,
@@ -651,13 +653,12 @@ export class FpsArenaRoom {
 
     switch (msg.type) {
       case "SET_LOADOUT": {
-        if (this.mode !== "WARMUP" && (this.phase === "LIVE" || this.phase === "COUNTDOWN")) {
-          player.pendingLoadout = msg.loadout;
-          break;
-        }
         player.pendingLoadout = undefined;
         this.applyPlayerLoadout(player, msg.loadout);
-        if (this.mode !== "WARMUP") player.throwableStock = createThrowableStock(msg.loadout.throwable, msg.loadout.tdmThrowables);
+        if (this.mode !== "WARMUP") {
+          player.throwableStock = createThrowableStock(msg.loadout.throwable, msg.loadout.tdmThrowables);
+        }
+        this.sendLocalState(player.id);
         this.broadcastRoomState();
         break;
       }
@@ -894,6 +895,7 @@ export class FpsArenaRoom {
     player.healingDelay = 0;
     player.spawnProtection = protectedSpawn ? SPAWN_PROTECTION_SEC : 0;
     player.nextShotAllowedAtMs = 0;
+    player.lastShotAtMs = 0;
     player.nextMeleeAt = 0;
     player.nextBotUtilityTick = this.tickCounter + 240 + player.playerIndex % 60;
     player.streak = 0;
@@ -1159,17 +1161,28 @@ export class FpsArenaRoom {
     shooter.combatStats.shots++;
     shooter.spawnProtection = 0;
     shooter.nextShotAllowedAtMs = nowMs + stats.shotIntervalSec * 1000 * 0.92;
+    const firstShot = nowMs - shooter.lastShotAtMs > 350;
+    shooter.lastShotAtMs = nowMs;
 
-    const spread = shooter.isBot ? (stats.pellets > 1 ? 0.035 : 0) : shotSpreadRadians(stats, msg.ads, {
-      crouching: shooter.state.crouching, grounded: shooter.state.grounded,
-      speed: Math.hypot(shooter.state.velocity.x, shooter.state.velocity.z),
-    });
+    const adsInput = typeof msg.adsAlpha === "number" && Number.isFinite(msg.adsAlpha) ? msg.adsAlpha : msg.ads;
+    const spread = shooter.isBot
+      ? (stats.pellets > 1 ? 0.035 : 0)
+      : shotSpreadRadians(
+          stats,
+          adsInput,
+          {
+            crouching: shooter.state.crouching,
+            grounded: shooter.state.grounded,
+            speed: Math.hypot(shooter.state.velocity.x, shooter.state.velocity.z),
+          },
+          firstShot
+        );
     const paths: ShotPath[] = [];
     const hits: HitConfirmation[] = [];
     const targets: ShotTarget[] = [];
     const rewind = shooter.isBot ? 0 : shooter.pingMs / 2 + INTERPOLATION_DELAY_MS;
     for (const target of this.players.values()) {
-      if (!target.alive || target.id === shooter.id || target.spawnProtection > 0 ||
+      if (!target.alive || target.id === shooter.id ||
         (target.team === shooter.team && !this.matchRules.friendlyFire)) continue;
       const hitboxes = this.lagComp.getRewoundHitboxes(target.id, rewind, nowMs) ?? computePlayerHitboxes(target.id, target.state);
       targets.push({ player: target, hitboxes });
@@ -1180,15 +1193,24 @@ export class FpsArenaRoom {
         ? this.resolveSniperShot(shooter, stats, msg.origin, dir, targets, hits)
         : this.resolveSingleBallisticRay(shooter, stats, msg.origin, dir, targets, hits).path);
     }
-    if (paths.some(({ playerId }) => playerId && this.players.get(playerId)?.team !== shooter.team)) {
+    if (
+      paths.some(({ playerId }) => {
+        const target = playerId ? this.players.get(playerId) : undefined;
+        return target && target.team !== shooter.team && target.spawnProtection <= 0;
+      })
+    ) {
       shooter.combatStats.shotsHit++;
     }
     this.broadcastJson({ type: "SHOT_FIRED", shooterId: shooter.id, shooterIndex: shooter.playerIndex,
       weaponId: stats.weaponId, suppressed: stats.useSuppressedAudio, origin: msg.origin, seq: msg.seq, paths });
     if (hits.length) {
       const strongest = hits.reduce((best, hit) => HIT_PRIORITY[hit.tier] > HIT_PRIORITY[best.tier] ? hit : best);
-      shooter.sender?.sendJson({ ...strongest, damage: hits.reduce((total, hit) => total + hit.damage, 0),
-        isHeadshot: hits.some((hit) => hit.hitZone === "HEAD"), isWallbang: hits.some((hit) => hit.isWallbang) });
+      shooter.sender?.sendJson({
+        ...strongest,
+        damage: hits.reduce((total, hit) => total + hit.damage, 0),
+        isHeadshot: hits.some((hit) => hit.tier !== "PROTECTED" && hit.hitZone === "HEAD"),
+        isWallbang: hits.some((hit) => hit.isWallbang),
+      });
     }
   }
 
@@ -1304,29 +1326,41 @@ export class FpsArenaRoom {
     }
 
     if (bestTarget) {
-      const baseDmg =
-        bestZone === "HEAD"
-          ? stats.damageHead
-          : bestZone === "CHEST"
-            ? stats.damageChest
-            : stats.damageLimb;
-      const wbMult = (isWallbang ? worldCast.penetrationExit?.damageMultiplier ?? 1.0 : 1.0) * energy;
-      const dist = Math.hypot(
-        bestTarget.state.position.x - shooter.state.position.x,
-        bestTarget.state.position.z - shooter.state.position.z
-      );
+      if (bestTarget.spawnProtection > 0) {
+        hits.push({
+          type: "HIT_CONFIRM",
+          tier: "PROTECTED",
+          damage: 0,
+          victimName: bestTarget.callsign,
+          hitZone: bestZone,
+          isHeadshot: false,
+          isWallbang,
+        });
+      } else {
+        const baseDmg =
+          bestZone === "HEAD"
+            ? stats.damageHead
+            : bestZone === "CHEST"
+              ? stats.damageChest
+              : stats.damageLimb;
+        const wbMult = (isWallbang ? worldCast.penetrationExit?.damageMultiplier ?? 1.0 : 1.0) * energy;
+        const dist = Math.hypot(
+          bestTarget.state.position.x - shooter.state.position.x,
+          bestTarget.state.position.z - shooter.state.position.z
+        );
 
-      this.applyDamageToPlayer(
-        shooter,
-        bestTarget,
-        Math.round(baseDmg * wbMult),
-        bestZone,
-        stats.weaponId,
-        stats.armorPenetration,
-        isWallbang,
-        dist,
-        hits
-      );
+        this.applyDamageToPlayer(
+          shooter,
+          bestTarget,
+          Math.round(baseDmg * wbMult),
+          bestZone,
+          stats.weaponId,
+          stats.armorPenetration,
+          isWallbang,
+          dist,
+          hits
+        );
+      }
     }
     return {
       path: { end: bestPoint, surfaces, playerId: bestTarget?.id, practiceTarget },

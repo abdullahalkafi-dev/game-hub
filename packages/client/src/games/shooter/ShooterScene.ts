@@ -154,7 +154,7 @@ const HOLD_BREATH_SECONDS = 3;
 
 const HELD_MOVEMENT_KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowLeft", "ArrowDown", "ArrowRight",
-  "ShiftLeft", "KeyC", "ControlLeft", "KeyQ", "KeyE",
+  "ShiftLeft", "KeyC", "ControlLeft",
 ]);
 
 function statesAgree(a: FpsPlayerState, b: FpsPlayerState): boolean {
@@ -250,6 +250,14 @@ export class ShooterScene {
   private readonly warmupPostMeshes: Mesh[] = [];
   private readonly storytellingMeshes: Mesh[] = [];
   private readonly landmarkTextures: DynamicTexture[] = [];
+  private readonly spawnBannerMeshes: Mesh[] = [];
+  private readonly spawnBannerMats: (StandardMaterial | PBRMaterial)[] = [];
+  private readonly spawnBannerEntries: {
+    team: "A" | "B";
+    tex: DynamicTexture;
+    mat: StandardMaterial;
+    lastKey: string;
+  }[] = [];
 
   private readonly blockMeshes = new Map<string, Mesh>();
   private readonly blockProps = new Map<string, InstantiatedProp>();
@@ -297,6 +305,11 @@ export class ShooterScene {
   private recoilOffsetPitch = 0;
   private recoilOffsetYaw = 0;
   private recoilShotCount = 0;
+  private pointerLockGraceEvents = 0;
+  private cameraRoll = 0;
+  private pendingRecoilRecoveryPitch = 0;
+  private lastShotAtMs = 0;
+  private readonly predictedTracerSeqs = new Set<number>();
   private holdBreathRemaining = HOLD_BREATH_SECONDS;
   private holdBreathExhausted = false;
   private breathSteady = 0;
@@ -372,6 +385,7 @@ export class ShooterScene {
     this.scene.environmentIntensity = 0.92;
 
     this.camera = new UniversalCamera("fps_cam", new Vector3(0, 1.65, -20), this.scene);
+    this.camera.updateUpVectorFromRotation = true;
     this.camera.minZ = 0.03;
     this.camera.maxZ = 350;
     this.camera.fov = (this.profile.settings.fov * Math.PI) / 180;
@@ -481,6 +495,8 @@ export class ShooterScene {
     this.movementEpoch = null;
     this.predictedMovement.length = 0;
     this.pendingShots.length = 0;
+    this.predictedTracerSeqs.clear();
+    this.pendingRecoilRecoveryPitch = 0;
     this.reloadRequested = false;
     this.reloadInputSequence = -1;
     this.airborneSeconds = 0;
@@ -511,13 +527,15 @@ export class ShooterScene {
   }
 
   forceEquipLocalLoadout(): void {
-    if (this.room.mode !== "WARMUP") return;
     const summary = this.getLocalPlayerSummary();
     if (summary) {
       summary.loadout = structuredClone(this.profile.loadout);
     }
     this.reloadTimer = 0;
+    this.reloadRequested = false;
+    this.burstRemaining = 0;
     this.fireModeIndex = 0;
+    this.loadMissingSkinModels();
     this.syncEquippedWeapons(true);
   }
 
@@ -636,6 +654,7 @@ export class ShooterScene {
   }
 
   private buildEnvironment(): void {
+    this.disposeSpawnBanners();
     for (const mesh of this.blockMeshes.values()) {
       mesh.material?.dispose(false, false);
       mesh.dispose();
@@ -875,6 +894,137 @@ export class ShooterScene {
       tgt.setEnabled(this.room.phase === "WARMUP");
       this.shadowGen.addShadowCaster(tgt);
       this.warmupTargetMeshes.push({ mesh: tgt, mat: tMat, flashTimer: 0 });
+    }
+
+    this.buildSpawnBanners();
+  }
+
+  private disposeSpawnBanners(): void {
+    for (const mesh of this.spawnBannerMeshes) mesh.dispose();
+    this.spawnBannerMeshes.length = 0;
+    for (const mat of this.spawnBannerMats) mat.dispose();
+    this.spawnBannerMats.length = 0;
+    for (const entry of this.spawnBannerEntries) {
+      entry.mat.dispose();
+      entry.tex.dispose();
+    }
+    this.spawnBannerEntries.length = 0;
+  }
+
+  private buildSpawnBanners(): void {
+    const screenZ = this.map.spawnScreenZ ?? 20;
+    const baseZ = screenZ + 0.45;
+    const frameMat = new PBRMaterial("spawn_banner_frame_mat", this.scene);
+    frameMat.albedoColor = Color3.FromHexString("#161e2e");
+    frameMat.metallic = 0.72;
+    frameMat.roughness = 0.42;
+    this.spawnBannerMats.push(frameMat);
+
+    for (const team of ["A", "B"] as const) {
+      const end = team === "A" ? -1 : 1;
+      const zPos = end * baseZ;
+      const screenCenterZ = end * screenZ;
+
+      const tex = new DynamicTexture(`spawn_banner_${team}`, { width: 768, height: 192 }, this.scene, true);
+      const mat = new StandardMaterial(`spawn_banner_mat_${team}`, this.scene);
+      mat.diffuseTexture = tex;
+      mat.emissiveTexture = tex;
+      mat.emissiveColor = new Color3(0.78, 0.78, 0.78);
+      mat.specularColor = Color3.Black();
+
+      const backing = MeshBuilder.CreateBox(
+        `spawn_banner_backing_${team}`,
+        { width: 5.96, height: 1.58, depth: 0.05 },
+        this.scene
+      );
+      backing.position.set(0, 3.15, zPos);
+      backing.material = frameMat;
+      backing.isPickable = false;
+      this.spawnBannerMeshes.push(backing);
+
+      for (const side of [-1, 1] as const) {
+        const strut = MeshBuilder.CreateBox(
+          `spawn_banner_strut_${team}_${side}`,
+          { width: 0.12, height: 0.12, depth: Math.abs(zPos - screenCenterZ) + 0.14 },
+          this.scene
+        );
+        strut.position.set(side * 2.82, 2.28, (zPos + screenCenterZ) * 0.5);
+        strut.material = frameMat;
+        strut.isPickable = false;
+        this.spawnBannerMeshes.push(strut);
+
+        const riser = MeshBuilder.CreateBox(
+          `spawn_banner_riser_${team}_${side}`,
+          { width: 0.12, height: 0.24, depth: 0.12 },
+          this.scene
+        );
+        riser.position.set(side * 2.82, 2.38, zPos);
+        riser.material = frameMat;
+        riser.isPickable = false;
+        this.spawnBannerMeshes.push(riser);
+      }
+
+      const front = MeshBuilder.CreatePlane(`spawn_banner_front_${team}`, { width: 5.8, height: 1.45 }, this.scene);
+      front.position.set(0, 3.15, zPos - 0.03);
+      front.rotation.y = 0;
+      front.material = mat;
+      front.isPickable = false;
+      this.spawnBannerMeshes.push(front);
+
+      const back = MeshBuilder.CreatePlane(`spawn_banner_back_${team}`, { width: 5.8, height: 1.45 }, this.scene);
+      back.position.set(0, 3.15, zPos + 0.03);
+      back.rotation.y = Math.PI;
+      back.material = mat;
+      back.isPickable = false;
+      this.spawnBannerMeshes.push(back);
+
+      this.spawnBannerEntries.push({ team, tex, mat, lastKey: "" });
+    }
+
+    this.updateSpawnBanners();
+  }
+
+  private updateSpawnBanners(): void {
+    if (!this.spawnBannerEntries.length) return;
+    const localTeam = this.getLocalPlayerSummary()?.team ?? "A";
+    for (const entry of this.spawnBannerEntries) {
+      const names = this.room.players
+        .filter((p) => p.team === entry.team)
+        .map((p) => p.callsign);
+      const isMySide = entry.team === localTeam;
+      const key = `${isMySide}|${names.join(",")}`;
+      if (entry.lastKey === key) continue;
+      entry.lastKey = key;
+
+      const ctx = entry.tex.getContext();
+      const w = 768;
+      const h = 192;
+      const accent = isMySide ? "#38bdf8" : "#f87171";
+      const header = isMySide ? "YOUR SPAWN" : "ENEMY SPAWN";
+      const body = names.length ? names.join("  •  ") : "OPEN SPAWN";
+
+      ctx.fillStyle = "#0b1320";
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.strokeStyle = isMySide ? "rgba(56, 189, 248, 0.45)" : "rgba(248, 113, 113, 0.45)";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(2, 2, w - 4, h - 4);
+      ctx.fillStyle = accent;
+      ctx.fillRect(0, 0, w, 16);
+
+      ctx.font = "900 28px Inter, Segoe UI, sans-serif";
+      ctx.fillStyle = accent;
+      ctx.fillText(header, (w - ctx.measureText(header).width) * 0.5, 64);
+
+      let fontSize = names.length >= 4 ? 34 : names.length === 3 ? 40 : names.length === 2 ? 46 : 54;
+      ctx.font = `900 ${fontSize}px Inter, Segoe UI, sans-serif`;
+      while (fontSize > 22 && ctx.measureText(body).width > w - 56) {
+        fontSize -= 3;
+        ctx.font = `900 ${fontSize}px Inter, Segoe UI, sans-serif`;
+      }
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillText(body, (w - ctx.measureText(body).width) * 0.5, 134);
+      entry.tex.update();
     }
   }
 
@@ -1214,23 +1364,38 @@ export class ShooterScene {
 
     this.mouseMoveHandler = (e: MouseEvent) => {
       if (this.paused || this.loadoutOpen || document.pointerLockElement !== this.app.canvas) return;
+      if (this.pointerLockGraceEvents > 0) {
+        this.pointerLockGraceEvents--;
+        return;
+      }
       const { movementX: dx, movementY: dy } = e;
+      if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.abs(dx) > 260 || Math.abs(dy) > 260) return;
+      const cdx = Math.max(-180, Math.min(180, dx));
+      const cdy = Math.max(-180, Math.min(180, dy));
 
       const stats = this.getActiveWeaponStats();
       const adsFactor = lerp(1, this.profile.settings.adsSensMult, this.adsAlpha);
       const fovZoomFactor = lerp(1, stats.adsFov / this.profile.settings.fov, this.adsAlpha);
       const sens = 0.0022 * this.profile.settings.hipSens * adsFactor * fovZoomFactor;
 
-      this.playerState.yaw += dx * sens;
+      this.playerState.yaw += cdx * sens;
       this.playerState.pitch = Math.max(
         -1.52,
-        Math.min(1.52, this.playerState.pitch - dy * sens)
+        Math.min(1.52, this.playerState.pitch - cdy * sens)
       );
-      this.viewModel.addMouseSway(dx, dy);
+      if (cdy > 0) {
+        this.pendingRecoilRecoveryPitch = Math.max(0, this.pendingRecoilRecoveryPitch - cdy * sens);
+      }
+      this.viewModel.addMouseSway(cdx, cdy);
     };
 
     this.pointerLockHandler = () => {
-      if (document.pointerLockElement !== this.app.canvas) this.clearCombatInputs();
+      if (document.pointerLockElement === this.app.canvas) {
+        this.pointerLockGraceEvents = 2;
+      } else {
+        this.pointerLockGraceEvents = 0;
+        this.clearCombatInputs();
+      }
       this.callbacks.onPointerCaptureError("");
     };
 
@@ -1275,6 +1440,7 @@ export class ShooterScene {
     this.breathSteady = 0;
     this.recoilOffsetPitch = 0;
     this.recoilOffsetYaw = 0;
+    this.pendingRecoilRecoveryPitch = 0;
     this.recoilShotCount = 0;
     this.viewModel.equip(config);
   }
@@ -1433,6 +1599,11 @@ export class ShooterScene {
           this.reloadTimer = 0;
           this.recoilOffsetPitch = 0;
           this.recoilOffsetYaw = 0;
+          this.pendingRecoilRecoveryPitch = 0;
+          this.recoilShotCount = 0;
+          this.cameraRoll = 0;
+          this.camera.rotation.z = 0;
+          this.predictedTracerSeqs.clear();
           this.slowMoTimer = 0;
           this.syncEquippedWeapons(true);
           this.resetRoundEntities();
@@ -1441,12 +1612,14 @@ export class ShooterScene {
         }
 
         this.syncRemotePlayers();
+        this.updateSpawnBanners();
         this.callbacks.onRoomUpdate(nextRoom);
         break;
       }
 
       case "SHOT_FIRED": {
         const isLocal = msg.shooterId === this.localPlayerId;
+        const skipLocalTracer = isLocal && this.predictedTracerSeqs.delete(msg.seq);
         const shooterSoldier = this.remoteSoldiers.get(msg.shooterId);
         const localMuzzle = isLocal ? this.pendingShots.find((shot) => shot.seq === msg.seq)?.muzzle : undefined;
         const tracerOrigin = localMuzzle ?? shooterSoldier?.getMuzzleWorldPos() ?? msg.origin;
@@ -1468,7 +1641,7 @@ export class ShooterScene {
           const dy = path.end.y - msg.origin.y;
           const dz = path.end.z - msg.origin.z;
           const length = Math.hypot(dx, dy, dz);
-          if (index < 2 && length > 1.2) this.vfx.spawnMovingTracer(tracerOrigin, path.end, path.bends);
+          if (!skipLocalTracer && index < 2 && length > 1.2) this.vfx.spawnMovingTracer(tracerOrigin, path.end, path.bends);
           if (eye && !whizzed && !msg.suppressed && length > 0.001) {
             const ray = { x: dx / length, y: dy / length, z: dz / length };
             const along = (eye.x - msg.origin.x) * ray.x + (eye.y - msg.origin.y) * ray.y + (eye.z - msg.origin.z) * ray.z;
@@ -1820,28 +1993,30 @@ export class ShooterScene {
   private syncRemotePlayers(): void {
     if (!this.assetsReady) return;
     this.loadMissingSkinModels();
+    const localTeam = this.getLocalPlayerSummary()?.team ?? "A";
     const activeIds = new Set<string>();
     for (const p of this.room.players) {
       if (p.id === this.localPlayerId) continue;
       activeIds.add(p.id);
       const kit = p.loadout;
+      const isAlly = p.team === localTeam;
       const existing = this.remoteSoldiers.get(p.id);
       if (!existing) {
-        this.remoteSoldiers.set(
+        const soldier = new RemoteSoldier(
+          this.scene,
           p.id,
-          new RemoteSoldier(
-            this.scene,
-            p.id,
-            p.playerIndex,
-            p.team,
-            kit,
-            this.shadowGen ?? undefined,
-            this.modelCache,
-            this.texGen
-          )
+          p.playerIndex,
+          p.team,
+          kit,
+          this.shadowGen ?? undefined,
+          this.modelCache,
+          this.texGen
         );
+        soldier.setRelation(isAlly);
+        this.remoteSoldiers.set(p.id, soldier);
       } else {
         existing.setTeam(p.team);
+        existing.setRelation(isAlly);
         existing.setShadowGenerator(this.shadowGen);
         existing.setLoadout(kit);
       }
@@ -1911,11 +2086,22 @@ export class ShooterScene {
       this.deathCamera.stop();
       this.predictedMovement.length = 0;
       this.pendingShots.length = 0;
+      this.predictedTracerSeqs.clear();
       this.reloadRequested = false;
       this.reloadInputSequence = -1;
       this.switchWeaponSlot(snap.activeSlot);
       if (!firstState) this.clearCombatInputs(true);
       this.renderCorrection.x = this.renderCorrection.y = this.renderCorrection.z = 0;
+      this.cameraRoll = 0;
+      this.pendingRecoilRecoveryPitch = 0;
+      this.recoilOffsetPitch = 0;
+      this.recoilOffsetYaw = 0;
+      this.recoilShotCount = 0;
+      if (this.camera.rotationQuaternion) {
+        (this.camera as unknown as { rotationQuaternion: null }).rotationQuaternion = null;
+      }
+      this.camera.rotation.z = 0;
+      this.camera.upVector.set(0, 1, 0);
       restoreCharacterPhysics(this.playerPhysics, this.playerState, snap.movement);
       this.prevPosition = { ...this.playerState.position };
       this.prevEyeHeight = this.playerState.eyeHeight;
@@ -2058,11 +2244,17 @@ export class ShooterScene {
       }
     }
 
-    // Recoil recovery
-    this.recoilOffsetPitch = damp(this.recoilOffsetPitch, 0, stats.recoilRecoverySpeed, dt);
-    this.recoilOffsetYaw = damp(this.recoilOffsetYaw, 0, stats.recoilRecoverySpeed, dt);
+    // Recoil recovery (PUBG/CoD style: camera itself kicks up; gentle recovery only when trigger is released and player didn't pull down)
+    this.recoilOffsetPitch = 0;
+    this.recoilOffsetYaw = 0;
     if (!this.mouseDownLeft) {
       this.recoilShotCount = Math.max(0, this.recoilShotCount - dt * 12);
+      if (performance.now() - this.lastShotAtMs > 90 && this.pendingRecoilRecoveryPitch > 0.0001) {
+        const next = damp(this.pendingRecoilRecoveryPitch, 0, stats.recoilRecoverySpeed * 0.55, dt);
+        const recoverDelta = this.pendingRecoilRecoveryPitch - next;
+        this.playerState.pitch = Math.max(-1.52, this.playerState.pitch - recoverDelta);
+        this.pendingRecoilRecoveryPitch = next;
+      }
     }
 
     this.updateHoldBreath(stats, dt);
@@ -2097,7 +2289,7 @@ export class ShooterScene {
     this.breathSteady = damp(this.breathSteady, steady ? 1 : 0, 18, dt);
   }
 
-  private getAimDirection(stats: EffectiveWeaponStats, now: number): Vec3 {
+  private getAimAngles(stats: EffectiveWeaponStats, now: number): { yaw: number; pitch: number } {
     let swayYaw = 0;
     let swayPitch = 0;
     if (this.getScopeLevel(stats) === "6X") {
@@ -2105,8 +2297,15 @@ export class ShooterScene {
       swayYaw = Math.sin(now * 0.0028) * amount;
       swayPitch = Math.cos(now * 0.0038) * amount;
     }
-    return yawPitchToDir({ x: 0, y: 0, z: 1 }, this.playerState.yaw + this.recoilOffsetYaw + swayYaw,
-      this.playerState.pitch + this.recoilOffsetPitch + swayPitch);
+    return {
+      yaw: this.playerState.yaw + this.recoilOffsetYaw + swayYaw,
+      pitch: Math.max(-1.55, Math.min(1.55, this.playerState.pitch + this.recoilOffsetPitch + swayPitch)),
+    };
+  }
+
+  private getAimDirection(stats: EffectiveWeaponStats, now: number): Vec3 {
+    const { yaw, pitch } = this.getAimAngles(stats, now);
+    return yawPitchToDir({ x: 0, y: 0, z: 1 }, yaw, pitch);
   }
 
   private getScopeLevel(stats: EffectiveWeaponStats): HudLiveSnapshot["adsScopeLevel"] {
@@ -2114,7 +2313,7 @@ export class ShooterScene {
       case "optic_red_dot": return "RED_DOT";
       case "optic_2x_acog": return "2X";
       case "optic_6x_sniper": return "6X";
-      default: return stats.adsFov <= 26 ? "6X" : "NONE";
+      default: return "NONE";
     }
   }
 
@@ -2134,10 +2333,11 @@ export class ShooterScene {
     const isAds = this.adsAlpha >= ADS_READY_THRESHOLD;
     const dir = this.getAimDirection(stats, now);
     const eye = getCameraEyePosition(this.playerState);
+    const muzzlePos = this.viewModel.getMuzzleWorldPosition();
 
     const seq = ++this.shotSequence;
     this.viewModel.cancelInspect();
-    this.pendingShots.push({ seq, slot: this.activeSlot, muzzle: this.viewModel.getMuzzleWorldPosition() });
+    this.pendingShots.push({ seq, slot: this.activeSlot, muzzle: muzzlePos });
     if (this.pendingShots.length > 120) this.pendingShots.shift();
     this.net.send({
       type: "FIRE_SHOT",
@@ -2146,11 +2346,31 @@ export class ShooterScene {
       dir,
       activeSlot: this.activeSlot,
       ads: isAds,
+      adsAlpha: this.adsAlpha,
       crouching: this.playerState.crouching,
       grounded: this.playerState.grounded,
       clientTimeMs: Date.now(),
       movementEpoch: this.movementEpoch ?? undefined,
     });
+
+    if (stats.pellets === 1) {
+      const localCast = this.physWorld.castBallisticWorldRay(eye, dir, stats.maxRangeMeters, 0);
+      const maxRayDist = Math.min(stats.maxRangeMeters, 90);
+      const endPos = localCast.primaryHit?.hitPoint ?? {
+        x: eye.x + dir.x * maxRayDist,
+        y: eye.y + dir.y * maxRayDist,
+        z: eye.z + dir.z * maxRayDist,
+      };
+      const dist = Math.hypot(endPos.x - eye.x, endPos.y - eye.y, endPos.z - eye.z);
+      if (dist > 1.2) {
+        this.vfx.spawnMovingTracer(muzzlePos, endPos);
+        this.predictedTracerSeqs.add(seq);
+        if (this.predictedTracerSeqs.size > 120) {
+          const oldest = this.predictedTracerSeqs.values().next().value;
+          if (oldest !== undefined) this.predictedTracerSeqs.delete(oldest);
+        }
+      }
+    }
 
     // Local VFX & audio immediately (0ms latency feel)
     this.viewModel.triggerFire(stats);
@@ -2162,17 +2382,19 @@ export class ShooterScene {
     this.pools.spawnShellCasing(ejectPos, right, up);
     this.cameraShakeIntensity = Math.min(0.035, this.cameraShakeIntensity + stats.recoilVertical * (isAds ? 0.002 : 0.005));
 
-    // Deterministic learnable recoil kick
-    const crouchRecoilMult = this.playerState.crouching ? 0.7 : 1.0;
+    // Deterministic learnable PUBG/CoD camera recoil kick
+    const crouchRecoilMult = this.playerState.crouching ? 0.72 : 1.0;
+    const adsRecoilMult = isAds ? 0.85 : 1.0;
+    const mult = crouchRecoilMult * adsRecoilMult;
     const pat = stats.blueprint.recoilPattern.patternX;
     const xKick = pat[Math.floor(this.recoilShotCount) % pat.length] ?? 0;
     this.recoilShotCount += 1;
-    this.recoilOffsetPitch = Math.min(
-      0.32,
-      this.recoilOffsetPitch + stats.recoilVertical * 0.013 * crouchRecoilMult
-    );
-    this.recoilOffsetYaw +=
-      (xKick * 0.012 + (Math.random() - 0.5) * stats.recoilHorizontal * 0.012) * crouchRecoilMult;
+    const pitchKick = stats.recoilVertical * 0.0115 * mult;
+    const yawKick = (xKick * 0.0085 + (Math.random() - 0.5) * stats.recoilHorizontal * 0.009) * mult;
+    this.playerState.pitch = Math.min(1.52, this.playerState.pitch + pitchKick);
+    this.playerState.yaw += yawKick;
+    this.pendingRecoilRecoveryPitch = Math.min(0.16, this.pendingRecoilRecoveryPitch + pitchKick);
+    this.lastShotAtMs = now;
     return true;
   }
 
@@ -2188,13 +2410,23 @@ export class ShooterScene {
     }
     const local = this.getLocalPlayerSummary();
     if (!local) return;
-    this.replayVictim ??= new RemoteSoldier(this.scene, "replay_victim", -1, local.team, local.loadout,
-      undefined, this.modelCache, this.texGen);
+    if (!this.replayVictim) {
+      this.replayVictim = new RemoteSoldier(this.scene, "replay_victim", -1, local.team, local.loadout,
+        undefined, this.modelCache, this.texGen);
+      this.replayVictim.setRelation(true);
+    }
     const { x, y, z } = this.deathCamera.victim;
     const yaw = Math.atan2(this.camera.position.x - x, this.camera.position.z - z);
     const alive = !this.deathCamera.reachedElimination;
     this.replayVictim.applySnapshot({ x, y, z, yaw, pitch: 0, lean: 0, crouching: false, sliding: false, vaulting: false,
       alive, ads: false, activeSlot: 0, grounded: true, hp: alive ? 100 : 0, armor: 0, vx: 0, vz: 0 }, dt);
+  }
+
+  private setCameraEuler(pitch: number, yaw: number, roll: number): void {
+    if (this.camera.rotationQuaternion) {
+      (this.camera as unknown as { rotationQuaternion: null }).rotationQuaternion = null;
+    }
+    this.camera.rotation.set(-pitch, yaw, roll);
   }
 
   private renderTick(alpha: number, rawDt: number): void {
@@ -2239,9 +2471,9 @@ export class ShooterScene {
     const adsFovRad = (stats.adsFov * Math.PI) / 180;
     this.camera.fov = lerp(baseFovRad, adsFovRad, this.adsAlpha);
 
-    const activeLookDir = this.getAimDirection(stats, performance.now());
+    const lookAngles = this.getAimAngles(stats, performance.now());
     const inAds = isAlive && this.adsAlpha >= ADS_READY_THRESHOLD;
-    const scoped = inAds && (scopeLevel === "2X" || scopeLevel === "6X");
+    const scoped = isAlive && this.adsAlpha >= 0.50 && (scopeLevel === "2X" || scopeLevel === "6X");
 
     const playingReplay = !isAlive && this.deathCamera.tick(dt, this.camera);
     this.updateReplayVictim(dt, playingReplay);
@@ -2267,20 +2499,19 @@ export class ShooterScene {
         interpPos.z + rightZ * leanShift
       );
 
-      this.camera.setTarget(
-        new Vector3(
-          this.camera.position.x + activeLookDir.x,
-          this.camera.position.y + activeLookDir.y,
-          this.camera.position.z + activeLookDir.z
-        )
+      this.cameraRoll = damp(
+        this.cameraRoll,
+        (-this.playerState.lean * LEAN_ROLL_DEG * Math.PI) / 180 + (this.playerState.sliding ? -0.09 : 0),
+        16,
+        dt
       );
-      this.camera.rotation.z =
-        (-this.playerState.lean * LEAN_ROLL_DEG * Math.PI) / 180 +
-        (this.playerState.sliding ? -0.14 : 0);
+      this.setCameraEuler(lookAngles.pitch, lookAngles.yaw, this.cameraRoll);
     } else if (playingReplay) {
+      this.cameraRoll = 0;
       this.viewModel.setVisible(false);
     } else {
       // Teammate 1st-person spectator camera
+      this.cameraRoll = 0;
       this.viewModel.setVisible(false);
       const aliveMates = this.room.players.filter(
         (p) => p.team === local?.team && p.alive && p.id !== this.localPlayerId
@@ -2293,21 +2524,17 @@ export class ShooterScene {
         if (snap) {
           const eyeHeight = snap.sliding ? 0.92 : snap.crouching ? 1.1 : 1.58;
           this.camera.position.set(snap.x, snap.y + eyeHeight, snap.z);
-          const dir = yawPitchToDir({ x: 0, y: 0, z: 1 }, snap.yaw, snap.pitch);
-          this.camera.setTarget(
-            new Vector3(
-              snap.x + dir.x,
-              snap.y + eyeHeight + dir.y,
-              snap.z + dir.z
-            )
-          );
+          this.setCameraEuler(Math.max(-1.52, Math.min(1.52, snap.pitch)), snap.yaw, 0);
+        } else {
+          this.setCameraEuler(-this.camera.rotation.x, this.camera.rotation.y, 0);
         }
       } else if (authoritative) {
         const { x, y, z } = authoritative.movement.position;
         this.camera.position.set(x, y + 1.8, z);
-        this.camera.setTarget(new Vector3(x + activeLookDir.x, y + 1.45, z + activeLookDir.z));
+        this.setCameraEuler(-0.22, lookAngles.yaw, 0);
+      } else {
+        this.setCameraEuler(-this.camera.rotation.x, this.camera.rotation.y, 0);
       }
-      this.camera.rotation.z = 0;
     }
 
     // Update ViewModel & Live Grenade Trajectory Arc
@@ -2483,7 +2710,7 @@ export class ShooterScene {
       magSize: stats.magSize,
       ammoReserve: this.ammoReserve[this.activeSlot],
       reloading: this.reloadTimer > 0,
-      ads: inAds,
+      ads: inAds || scoped,
       adsScopeLevel: scopeLevel,
       holdBreathPct: Math.ceil((this.holdBreathRemaining / HOLD_BREATH_SECONDS) * 100),
       spreadBloom: shotSpreadMultiplier({ grounded: this.playerState.grounded, crouching: this.playerState.crouching, speed: speedXZ }),
@@ -2541,6 +2768,7 @@ export class ShooterScene {
 
     for (const s of this.remoteSoldiers.values()) s.dispose();
     this.remoteSoldiers.clear();
+    this.disposeSpawnBanners();
     for (const prop of this.blockProps.values()) prop.dispose();
     this.blockProps.clear();
     for (const sm of this.storytellingMeshes) {
