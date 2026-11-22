@@ -63,9 +63,15 @@ describe("Modular Registries & Weapon Stat Calculator", () => {
       expect(skin.targetWeaponId).toBeDefined();
       expect(skin.model!.url).toMatch(/^\/assets\/models\/weapons\/[a-z0-9_]+\.glb$/);
       expect(skinsForWeapon(skin.targetWeaponId!).map((s) => s.id)).toContain(skin.id);
-      expect(skinsForWeapon("akm").map((s) => s.id)).not.toContain(skin.id);
+      for (const weapon of WEAPON_LIST.filter((w) => w.id !== skin.targetWeaponId)) {
+        expect(skinsForWeapon(weapon.id).map((s) => s.id)).not.toContain(skin.id);
+      }
     }
-    expect(skinsForWeapon("akm").length).toBe(SKIN_LIST.filter((skin) => !skin.targetWeaponId).length);
+    // Every gun still gets all universal skins, plus only the model skins made for it.
+    for (const weapon of WEAPON_LIST) {
+      const expected = SKIN_LIST.filter((skin) => !skin.targetWeaponId || skin.targetWeaponId === weapon.id);
+      expect(skinsForWeapon(weapon.id)).toEqual(expected);
+    }
   });
 
   it("computes effective weapon stats from socket attachments without mutating base blueprints", () => {
