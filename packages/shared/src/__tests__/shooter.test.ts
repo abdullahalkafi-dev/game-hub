@@ -49,7 +49,7 @@ describe("Modular Registries & Weapon Stat Calculator", () => {
   it("contains 8 weapons, 8 attachments, the base and progression skins, 3 throwables, and 3 maps", () => {
     expect(WEAPON_LIST).toHaveLength(8);
     expect(ATTACHMENT_LIST).toHaveLength(8);
-    expect(SKIN_LIST).toHaveLength(9);
+    expect(SKIN_LIST).toHaveLength(11);
     expect(SKIN_LIST.filter((skin) => skin.unlockLevel).map((skin) => skin.unlockLevel)).toEqual([2, 4]);
     expect(THROWABLE_LIST).toHaveLength(3);
     expect(MAP_LIST).toHaveLength(3);

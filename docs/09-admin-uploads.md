@@ -47,6 +47,7 @@ This is the review step that happens after you upload.
 
 1. Download the file from the server (see above) or from the admin preview.
 2. Shrink it: `node tools/optimize-weapon.mjs in.glb packages/client/public/assets/models/weapons/<name>.glb`. It simplifies the mesh to about 20,000 triangles, downsizes textures to 1024 px as WebP, and quantizes vertex data. A 21 MB upload becomes about 1 MB with no visible loss. Flags: `--tris`, `--tex`, `--quality`.
+2b. If the barrel runs along X instead of Z, add `--orient yup-xfwd` (or `yup-negxfwd`, `zup-xfwd`, `zup-yfwd`). Check with `node tools/model-profile.mjs <file>`: its size line should show z as the longest axis.
 3. Add an entry to `SKIN_REGISTRY` in `packages/shared/src/registries/SkinRegistry.ts` with a `model` block: the file path, the in-game length in metres, and where the grips, optic, muzzle and underbarrel sit as fractions of the model's bounding box (x left to right, y bottom to top, z stock to muzzle). Set `flipForward` if the barrel points the wrong way. The fractions can be measured from the model's vertices; Frost Crystal (M416) is a worked example.
 4. Check it in the Gunsmith with a suppressor, a grip and an optic equipped, then in a match.
 
