@@ -22,4 +22,5 @@ The game hub includes StrikeCore, a browser-based multiplayer tactical shooter, 
 | [07 — Combat and visuals overhaul](./07-combat-visuals-overhaul-changelog.md) | Latest changelog and handover: particle fix, barrels, grenades, procedural weapons, hands, optic quick-swap, and open items |
 | [08 — Deployment](./08-deployment.md) | Docker stack, nginx and TLS layout, and how to ship an update to the VPS |
 | [09 — Admin uploads](./09-admin-uploads.md) | The private `/admin` page for uploading weapon `.glb` models, its password, limits and the review workflow |
+| [10 — Arcade Flight Combat design](./10-arcade-flight-combat.md) | Design baseline for the planned flight game, including launch modes, aircraft and mission creation, performance, and release criteria |
 | [Audio credits](../packages/client/public/assets/audio/CREDITS.md) | Attribution for gunfire, reload, and the optional spoken headshot cue |
